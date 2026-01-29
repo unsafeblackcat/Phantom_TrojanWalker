@@ -51,7 +51,15 @@ async def analyze_file(
         }
     
     # Save file
-    file_path = os.path.join(UPLOAD_DIR, f"{sha256}_{file.filename}")
+    original_name = file.filename or ""
+    safe_name = os.path.basename(original_name)
+    if not safe_name:
+        safe_name = "upload"
+    final_name = f"{sha256}_{safe_name}"
+    file_path = os.path.normpath(os.path.join(UPLOAD_DIR, final_name))
+    # Ensure the resolved path stays within the upload directory
+    if os.path.commonpath([UPLOAD_DIR, file_path]) != UPLOAD_DIR:
+        raise HTTPException(status_code=400, detail="Invalid filename")
     # Write async (stream when sha256 provided to avoid buffering whole file)
     async with aiofiles.open(file_path, "wb") as out_file:
         if "content" in locals():

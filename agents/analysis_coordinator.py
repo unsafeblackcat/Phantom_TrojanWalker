@@ -172,8 +172,15 @@ class AnalysisCoordinator:
                     content = str(resp)
                 try:
                     analyses.append(json.loads(content))
-                except Exception as e:
-                    analyses.append({"error": f"Failed to parse JSON: {e}", "raw_response": content})
+                except Exception:
+                    # Log full exception details server-side, but do not expose them to the client.
+                    logger.error("Failed to parse JSON from LLM response", exc_info=True)
+                    analyses.append(
+                        {
+                            "error": "Failed to parse AI JSON response.",
+                            "raw_response": content,
+                        }
+                    )
 
             function_analysis_results = [
                 {"name": name, "analysis": analysis}

@@ -44,14 +44,17 @@ function App() {
       sha256 = await sha256HexFromFile(file);
       // Pre-dedupe: if task exists for this sha256, reuse it and avoid uploading.
       const existing = await axios.get(`${API_BASE}/result/${sha256}`);
-      setTaskId(existing.data.task_id);
-      setStatus(existing.data.status);
-      if (existing.data.status === 'completed') {
-        setReport(existing.data);
-      } else if (existing.data.status === 'failed') {
-        setError(existing.data.error || 'Analysis failed.');
+      const existingStatus = existing?.data?.status;
+      // Only reuse successful or in-flight tasks. If the last attempt failed,
+      // allow the user to re-upload and trigger a fresh analysis.
+      if (existingStatus && existingStatus !== 'failed') {
+        setTaskId(existing.data.task_id);
+        setStatus(existingStatus);
+        if (existingStatus === 'completed') {
+          setReport(existing.data);
+        }
+        return;
       }
-      return;
     } catch (err) {
       // 404 means no existing task -> proceed to upload.
       // Any other error (e.g. WebCrypto not available) also falls back to upload.
@@ -109,6 +112,8 @@ function App() {
       setStatus(res.data.status);
       if (res.data.status === "completed") {
         setReport(res.data);
+      } else if (res.data.status === "failed") {
+        setError(res.data.error || "Analysis failed.");
       }
     } catch (err) {
       setError("Analysis not found for this hash.");

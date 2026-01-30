@@ -132,7 +132,8 @@ def get_result_by_hash(sha256: str, db: Session = Depends(get_db)):
         "strings": task.strings,
         "decompiled_code": task.decompiled_code,
         "function_analyses": task.function_analyses,
-        "malware_report": task.malware_report
+        "malware_report": task.malware_report,
+        "error": task.error_message,
     }
 
 @router.get("/history")

@@ -12,6 +12,8 @@ class FunctionAnalysisAgent:
     def __init__(self):
         self.config = load_config()
         self.agent_config = self.config.FunctionAnalysisAgent
+        if not self.agent_config.llm.api_key or self.agent_config.llm.api_key.strip() in {"", "YOUR_API_KEY_HERE"}:
+            raise ValueError("Missing LLM API key in agents/config.yaml (FunctionAnalysisAgent.llm.api_key)")
         
         # 从配置中初始化 Rate Limiter
         rl_config = self.agent_config.rate_limit
@@ -53,6 +55,8 @@ class MalwareAnalysisAgent:
     def __init__(self):
         self.config = load_config()
         self.agent_config = self.config.MalwareAnalysisAgent
+        if not self.agent_config.llm.api_key or self.agent_config.llm.api_key.strip() in {"", "YOUR_API_KEY_HERE"}:
+            raise ValueError("Missing LLM API key in agents/config.yaml (MalwareAnalysisAgent.llm.api_key)")
 
         # 从配置中初始化 Rate Limiter
         rl_config = self.agent_config.rate_limit

@@ -11,6 +11,8 @@ services:
     volumes:
       - ./data:/app/data
       - ./agents/config.yaml:/app/agents/config.yaml:ro
+    environment:
+      - PTW_RIZIN_BASE_URL=http://ph_rzpipe:8000
 
   ph_rzpipe:
     build:

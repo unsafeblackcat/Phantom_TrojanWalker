@@ -51,11 +51,16 @@ app = FastAPI(
 )
 
 # CORS
-origins = [
-    "http://localhost:5173", # Vite default
-    "http://localhost:3000",
-    "*"
-]
+# IMPORTANT: When allow_credentials=True, allow_origins cannot include "*".
+origins_env = os.getenv("PTW_CORS_ORIGINS")
+if origins_env:
+    origins = [o.strip() for o in origins_env.split(",") if o.strip()]
+else:
+    origins = [
+        "http://localhost:5173",  # Vite default
+        "http://localhost:3000",
+        "http://localhost:8080",  # frontend server.mjs
+    ]
 
 app.add_middleware(
     CORSMiddleware,

@@ -18,10 +18,37 @@ class AnalysisWorker:
         self._running = False
         self._analysis_lock = asyncio.Lock() # Explicit lock to ensure only one analysis runs at a time
 
+    def _requeue_unfinished_tasks(self):
+        db: Session = SessionLocal()
+        try:
+            tasks = (
+                db.query(AnalysisTask)
+                .filter(AnalysisTask.status.in_(["pending", "processing"]))
+                .order_by(AnalysisTask.created_at.asc())
+                .all()
+            )
+            if not tasks:
+                return
+
+            # Any "processing" tasks were interrupted; mark them pending and requeue.
+            for t in tasks:
+                if t.status == "processing":
+                    t.status = "pending"
+            db.commit()
+
+            for t in tasks:
+                self.queue.put_nowait(t.id)
+            logger.info("Re-queued %d unfinished task(s) on startup.", len(tasks))
+        except Exception:
+            logger.error("Failed to re-queue unfinished tasks on startup", exc_info=True)
+        finally:
+            db.close()
+
     async def start(self):
         self.coordinator = create_coordinator()
         self._running = True
         logger.info("AnalysisWorker started.")
+        self._requeue_unfinished_tasks()
         asyncio.create_task(self.process_queue())
 
     async def process_queue(self):

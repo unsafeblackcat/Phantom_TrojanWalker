@@ -79,11 +79,5 @@ class RizinClient:
         return res if isinstance(res, dict) else {}
 
     async def get_decompiled_codes_batch(self, addresses: List[str]) -> List[Dict[str, str]]:
-        # 使用批量接口，如果配置中没有定义 decompile_batch，则默认尝试 /decompile_batch
-        endpoint_key = "decompile_batch"
-        if endpoint_key not in self.endpoints:
-            # 临时增加 endpoint 防止 Key Error
-            self.endpoints[endpoint_key] = "/decompile_batch"
-
         # 批量反编译非常耗时，根据数量动态调整超时是一个好主意，这里给一个较大的定值
-        return await self._request("POST", endpoint_key, json=addresses, timeout=600.0)
+        return await self._request("POST", "decompile_batch", json=addresses, timeout=600.0)

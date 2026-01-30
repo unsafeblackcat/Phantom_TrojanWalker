@@ -1,13 +1,21 @@
 import os, shutil, uuid, re
 from typing import List
+import threading
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from analyzer import RizinAnalyzer
 
 app = FastAPI()
 analyzer = None
+analyzer_lock = threading.RLock()
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 UPLOAD_DIR = os.path.join(ROOT_DIR, "data", "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+def require_analyzer() -> RizinAnalyzer:
+    global analyzer
+    if analyzer is None:
+        raise HTTPException(status_code=409, detail="No binary uploaded. POST /upload first.")
+    return analyzer
 
 @app.get("/health_check")
 def health_check(): return {"status": "ok"}
@@ -27,37 +35,53 @@ async def upload(file: UploadFile = File(...)):
     
     with open(path, "wb") as f:
         shutil.copyfileobj(file.file, f)
-        
-    if analyzer:
-        analyzer.close()
-    
-    analyzer = RizinAnalyzer(path)
-    if not analyzer.open():
-        raise HTTPException(500, "Rizin open failed")
-        
-    return {"status": "ok", "path": path}
+
+    with analyzer_lock:
+        if analyzer:
+            analyzer.close()
+
+        analyzer = RizinAnalyzer(path)
+        if not analyzer.open():
+            analyzer = None
+            raise HTTPException(500, "Rizin open failed")
+
+    # Avoid leaking server filesystem paths.
+    return {"status": "ok"}
 
 @app.get("/analyze")
-def do_analyze(level: str = "aaa"): return analyzer.analyze(level)
+def do_analyze(level: str = "aaa"):
+    with analyzer_lock:
+        return require_analyzer().analyze(level)
 
 @app.get("/metadata")
-def get_meta(): return analyzer.get_info()
+def get_meta():
+    with analyzer_lock:
+        return require_analyzer().get_info()
 
 @app.get("/functions")
-def get_funcs(): return analyzer.get_functions()
+def get_funcs():
+    with analyzer_lock:
+        return require_analyzer().get_functions()
 
 @app.get("/strings")
-def get_strs(): return analyzer.get_strings()
+def get_strs():
+    with analyzer_lock:
+        return require_analyzer().get_strings()
 
 @app.get("/decompile")
-def decompile(addr: str): return analyzer.get_decompiled_code(addr)
+def decompile(addr: str):
+    with analyzer_lock:
+        return require_analyzer().get_decompiled_code(addr)
 
 @app.get("/callgraph")
-def get_callgraph(): return analyzer.get_global_call_graph()
+def get_callgraph():
+    with analyzer_lock:
+        return require_analyzer().get_global_call_graph()
 
 @app.post("/decompile_batch")
 def decompile_batch(addresses: List[str]):
-    return analyzer.get_decompiled_code_batch(addresses)
+    with analyzer_lock:
+        return require_analyzer().get_decompiled_code_batch(addresses)
 
 if __name__ == "__main__":
     import uvicorn

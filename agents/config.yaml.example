@@ -10,6 +10,7 @@ plugins:
       strings: "/strings"
       callgraph: "/callgraph"
       decompile: "/decompile"
+      decompile_batch: "/decompile_batch"
 
 FunctionAnalysisAgent:
   system_prompt: ""

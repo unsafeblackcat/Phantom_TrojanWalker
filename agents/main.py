@@ -1,4 +1,5 @@
 import logging
+import os
 from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.responses import JSONResponse
 from colorama import Fore, Style, init
@@ -101,5 +102,7 @@ async def analyze_endpoint(file: UploadFile = File(...)):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    # Legacy entrypoint (v1). Prefer running backend/main.py (v2) on :8001.
+    port = int(os.getenv("AGENTS_PORT", "8002"))
+    uvicorn.run(app, host="0.0.0.0", port=port)
 

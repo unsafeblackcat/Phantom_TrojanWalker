@@ -41,6 +41,13 @@ def load_config(config_path: str = None) -> AppConfig:
         
     with open(config_path, "r", encoding="utf-8") as f:
         config = AppConfig(**yaml.safe_load(f))
+
+    # Environment overrides (useful for Docker/production without editing config files).
+    rizin_base_url = os.getenv("PTW_RIZIN_BASE_URL")
+    if rizin_base_url:
+        # Pydantic models are mutable by default.
+        if "rizin" in config.plugins:
+            config.plugins["rizin"].base_url = rizin_base_url
     
     # 加载各个 Agent 的系统提示词
     for agent_name in ["FunctionAnalysisAgent", "MalwareAnalysisAgent"]:

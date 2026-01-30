@@ -60,7 +60,9 @@ class AnalysisWorker:
 
             # Run analysis
             try:
-                result = await self.coordinator.analyze_content(task.filename, content)
+                # Use sha256 as a safe, stable filename when talking to downstream analyzers.
+                # Keep original task.filename only for display/logging.
+                result = await self.coordinator.analyze_content(task.sha256, content)
                 task.status = "completed"
                 
                 # Unpack result into columns

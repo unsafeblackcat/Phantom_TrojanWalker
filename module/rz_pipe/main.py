@@ -1,4 +1,4 @@
-import os, shutil, uuid
+import os, shutil, uuid, re
 from typing import List
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from analyzer import RizinAnalyzer
@@ -15,7 +15,14 @@ def health_check(): return {"status": "ok"}
 @app.post("/upload")
 async def upload(file: UploadFile = File(...)):
     global analyzer
-    safe_name = f"{uuid.uuid4().hex}_{file.filename}"
+
+    original_name = file.filename or ""
+    base_name = os.path.basename(original_name)
+    if not base_name:
+        base_name = "upload"
+    # Keep a conservative filename charset to avoid filesystem/path issues.
+    base_name = re.sub(r"[^A-Za-z0-9._-]+", "_", base_name)
+    safe_name = f"{uuid.uuid4().hex}_{base_name}"
     path = os.path.join(UPLOAD_DIR, safe_name)
     
     with open(path, "wb") as f:

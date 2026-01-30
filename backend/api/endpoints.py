@@ -51,11 +51,8 @@ async def analyze_file(
         }
     
     # Save file
-    original_name = file.filename or ""
-    safe_name = os.path.basename(original_name)
-    if not safe_name:
-        safe_name = "upload"
-    final_name = f"{sha256}_{safe_name}"
+    # Always store by sha256 to avoid filename special chars/path tricks.
+    final_name = sha256
     file_path = os.path.normpath(os.path.join(UPLOAD_DIR, final_name))
     # Ensure the resolved path stays within the upload directory
     if os.path.commonpath([UPLOAD_DIR, file_path]) != UPLOAD_DIR:

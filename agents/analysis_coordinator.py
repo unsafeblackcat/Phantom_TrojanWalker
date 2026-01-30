@@ -1,13 +1,9 @@
 import logging
-import json
 from typing import Dict, Any, List
 from fastapi import UploadFile
 
 from rizin_client import RizinClient
 from agent_core import FunctionAnalysisAgent, MalwareAnalysisAgent
-# 虽然这里可能不直接捕获异常（由上层处理），但导入以便类型注解或特定的 try-catch
-from exceptions import RizinBackendError, LLMResponseError
-from langchain.messages import SystemMessage, HumanMessage
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +92,7 @@ class AnalysisCoordinator:
 
         # 7. Call Graph
         logger.info("Step 7: Generating global call graph...")
-        callgraph_data = await self.rizin.get_callgraph()
+        await self.rizin.get_callgraph()
 
         # 8. Decompile (Batch)
         logger.info(f"Step 8: Decompiling functions (Batch mode)...")
@@ -133,59 +129,7 @@ class AnalysisCoordinator:
             logger.info("No target functions found for AI analysis, skipping function analysis step.")
             function_analysis_results = []
         else:
-            # LangChain supports native concurrency limiting via RunnableConfig.max_concurrency.
-            # We batch the requests and let LangChain manage parallelism.
-            max_input_tokens = getattr(self.func_agent.agent_config.llm, "max_input_tokens", None)
-            max_char_limit = None
-            if isinstance(max_input_tokens, int):
-                max_char_limit = max(0, max_input_tokens - 10000)
-
-            prepared_codes = []
-            prepared_names = []
-            for item in target_funcs:
-                code = item.get("code") or ""
-                if isinstance(max_char_limit, int) and max_char_limit > 0 and len(code) > max_char_limit:
-                    code = code[:max_char_limit] + "\n... [Code truncated for AI analysis due to context limits] ..."
-                prepared_codes.append(code)
-                prepared_names.append(item.get("name"))
-
-            # Use LangChain's built-in concurrency limiting on batch calls.
-            message_batches = [
-                [
-                    SystemMessage(content=self.func_agent.agent_config.system_prompt),
-                    HumanMessage(content=str(code)),
-                ]
-                for code in prepared_codes
-            ]
-            config = {"max_concurrency": self.func_agent.agent_config.max_concurrency}
-
-            try:
-                responses = await self.func_agent.llm.abatch(message_batches, config=config)
-            except AttributeError:
-                # Fallback for older LangChain versions that may not expose `abatch`.
-                responses = self.func_agent.llm.batch(message_batches, config=config)
-
-            analyses: List[dict] = []
-            for resp in responses:
-                content = getattr(resp, "content", None)
-                if content is None:
-                    content = str(resp)
-                try:
-                    analyses.append(json.loads(content))
-                except Exception:
-                    # Log full exception details server-side, but do not expose them to the client.
-                    logger.error("Failed to parse JSON from LLM response", exc_info=True)
-                    analyses.append(
-                        {
-                            "error": "Failed to parse AI JSON response.",
-                            "raw_response": content,
-                        }
-                    )
-
-            function_analysis_results = [
-                {"name": name, "analysis": analysis}
-                for name, analysis in zip(prepared_names, analyses)
-            ]
+            function_analysis_results = await self.func_agent.analyze_decompiled_batch(target_funcs)
 
         # 9.5 Filter key functions (ATT&CK matched)
         # 只把“能映射到 ATT&CK 的重点函数”交给最终报告 Agent，减少噪音。

@@ -21,9 +21,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: rzpipe
-            image_suffix: rzpipe
-            dockerfile: docker/Dockerfile.rzpipe
+          - name: ghidra
+            image_suffix: ghidra
+            dockerfile: docker/Dockerfile.ghidra
             context: .
           - name: backend
             image_suffix: backend

@@ -11,16 +11,17 @@ if AGENTS_DIR not in sys.path:
 
 from agents.config_loader import load_config
 from agents.agent_core import FunctionAnalysisAgent, MalwareAnalysisAgent
-from agents.rizin_client import RizinClient
+from agents.ghidra_client import GhidraClient
 from agents.analysis_coordinator import AnalysisCoordinator
 
 def create_coordinator() -> AnalysisCoordinator:
     config = load_config("agents/config.yaml")
 
-    rizin_client = RizinClient(config=config)
+    ghidra_client = GhidraClient(config=config)
     
     # Initialize agents (they load config internally in current implementation)
     func_agent = FunctionAnalysisAgent()
     malware_agent = MalwareAnalysisAgent()
     
-    return AnalysisCoordinator(rizin_client, func_agent, malware_agent)
+    return AnalysisCoordinator(ghidra_client, func_agent, malware_agent)
+

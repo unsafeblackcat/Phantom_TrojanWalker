@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 from config_loader import load_config
 from agent_core import FunctionAnalysisAgent, MalwareAnalysisAgent
-from rizin_client import RizinClient
+from ghidra_client import GhidraClient
 from analysis_coordinator import AnalysisCoordinator
 from exceptions import TrojanWalkerError
 
@@ -75,15 +75,15 @@ try:
     logger.info("Initializing services...")
     config = load_config()
     
-    # 实例化 Rizin 客户端
-    rizin_client = RizinClient(config)
+    # 实例化 Ghidra 客户端
+    ghidra_client = GhidraClient(config)
     
     # 实例化 Agents
     function_agent = FunctionAnalysisAgent()
     malware_agent = MalwareAnalysisAgent()
     
     # 实例化协调器
-    coordinator = AnalysisCoordinator(rizin_client, function_agent, malware_agent)
+    coordinator = AnalysisCoordinator(ghidra_client, function_agent, malware_agent)
     logger.info("Services initialized successfully.")
 except Exception as e:
     logger.critical(f"Failed to initialize services: {e}")
@@ -93,7 +93,7 @@ except Exception as e:
 @app.post("/analyze")
 async def analyze_endpoint(file: UploadFile = File(...)):
     """
-    接收一个文件，并协调 Rizin 后端进行分析，提取元数据、函数、字符串、调用图和反编译代码。
+    接收一个文件，并协调 Ghidra 后端进行分析，提取元数据、函数、字符串、调用图和反编译代码。
     """
     if coordinator is None:
         raise TrojanWalkerError("Service not initialized properly.")

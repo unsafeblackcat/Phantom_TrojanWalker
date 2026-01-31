@@ -1,5 +1,5 @@
 plugins:
-  rizin:
+  ghidra:
     base_url: "http://localhost:8000"
     endpoints:
       health_check: "/health_check"

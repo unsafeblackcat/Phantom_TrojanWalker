@@ -2,12 +2,12 @@ class TrojanWalkerError(Exception):
     """项目基类异常"""
     pass
 
-class RizinBackendError(TrojanWalkerError):
-    """远程 Rizin 后端服务不可达或通信失败"""
+class GhidraBackendError(TrojanWalkerError):
+    """远程 Ghidra 后端服务不可达或通信失败"""
     pass
 
-class RizinAnalysisError(RizinBackendError):
-    """后端执行命令 (如 aaa) 逻辑失败"""
+class GhidraAnalysisError(GhidraBackendError):
+    """Ghidra 分析执行失败"""
     pass
 
 class AgentError(TrojanWalkerError):

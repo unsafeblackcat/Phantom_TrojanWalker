@@ -4,7 +4,7 @@ Replaces the previous RizinClient with identical interface.
 """
 import httpx
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from config_loader import AppConfig
 from exceptions import GhidraBackendError
 
@@ -133,6 +133,26 @@ class GhidraClient:
         """
         # Batch decompilation can be very time-consuming with Ghidra
         res = await self._request("POST", "decompile_batch", json=addresses, timeout=900.0)
+        return self._coerce_list(res)
+
+    async def get_function_xrefs(self, address_or_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Get cross-references for a single function.
+        Returns: {name, offset, callers, callees} or None if not found.
+        """
+        try:
+            res = await self._request("GET", "xrefs", params={"addr": address_or_name}, timeout=30.0)
+            return self._coerce_dict(res) if res else None
+        except Exception:
+            return None
+
+    async def get_function_xrefs_batch(self, addresses: List[str]) -> List[Dict[str, Any]]:
+        """
+        Batch get cross-references for multiple functions.
+        Input: list of function names or addresses (mixed).
+        Returns: list of {name, offset, callers, callees} dicts.
+        """
+        res = await self._request("POST", "xrefs_batch", json=addresses, timeout=120.0)
         return self._coerce_list(res)
 
     def _coerce_dict(self, value: Any) -> Dict[str, Any]:

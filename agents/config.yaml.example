@@ -11,6 +11,8 @@ plugins:
       callgraph: "/callgraph"
       decompile: "/decompile"
       decompile_batch: "/decompile_batch"
+      xrefs: "/xrefs"
+      xrefs_batch: "/xrefs_batch"
 
 FunctionAnalysisAgent:
   system_prompt: ""

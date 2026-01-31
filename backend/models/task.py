@@ -20,6 +20,7 @@ class AnalysisTask(Base):
     functions = Column(JSON, nullable=True)
     strings = Column(JSON, nullable=True)
     decompiled_code = Column(JSON, nullable=True)
+    function_xrefs = Column(JSON, nullable=True)  # Per-function cross-references (callers/callees)
     function_analyses = Column(JSON, nullable=True)
     malware_report = Column(JSON, nullable=True)
 

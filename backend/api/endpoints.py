@@ -117,6 +117,7 @@ def _task_summary_payload(task: AnalysisTask) -> dict:
         "functions": task.functions,
         "strings": task.strings,
         "decompiled_code": task.decompiled_code,
+        "function_xrefs": task.function_xrefs,
         "function_analyses": task.function_analyses,
         "malware_report": task.malware_report,
         "error": task.error_message,

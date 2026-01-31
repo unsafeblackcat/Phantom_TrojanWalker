@@ -143,6 +143,30 @@ def decompile_batch(addresses: List[str]):
         return require_analyzer().get_decompiled_code_batch(addresses)
 
 
+@app.get("/xrefs")
+def get_xrefs(addr: str):
+    """
+    Get cross-references for a single function by address or name.
+    Returns: {name, offset, callers, callees}.
+    """
+    with analyzer_lock:
+        result = require_analyzer().get_function_xrefs(addr)
+        if result is None:
+            raise HTTPException(404, f"Function not found: {addr}")
+        return result
+
+
+@app.post("/xrefs_batch")
+def get_xrefs_batch(addresses: List[str]):
+    """
+    Batch get cross-references for multiple functions.
+    Request body: JSON array of function names or addresses.
+    Returns: list of {name, offset, callers, callees} objects.
+    """
+    with analyzer_lock:
+        return require_analyzer().get_function_xrefs_batch(addresses)
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

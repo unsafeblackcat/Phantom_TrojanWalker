@@ -61,6 +61,24 @@ class AnalysisCoordinator:
         }
         return normalized in interesting
 
+    def _is_entry_point_function(self, name: str) -> bool:
+        """Check if function is an entry point that should always be analyzed."""
+        if not name:
+            return False
+        normalized = self._normalize_func_name(str(name))
+        # Entry points that must always be analyzed, even if not called by others.
+        entry_points = {
+            "main",
+            "wmain",
+            "winmain",
+            "wwinmain",
+            "dllmain",
+            "_start",
+            "start",
+            "entry",
+        }
+        return normalized in entry_points
+
     def _build_functions_payload(self, raw_funcs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         # Refactor: isolate mapping logic for readability and reuse.
         return [
@@ -98,6 +116,39 @@ class AnalysisCoordinator:
             for item in decompiled_codes
             if self._is_ai_target_function(item.get("name"))
         ]
+
+    def _build_callers_lookup(self, function_xrefs: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+        """Build a lookup from function name to its callers list."""
+        lookup: Dict[str, List[Dict[str, Any]]] = {}
+        for xref in function_xrefs:
+            name = xref.get("name")
+            if name:
+                lookup[name] = xref.get("callers", [])
+        return lookup
+
+    def _filter_functions_with_callers(
+        self,
+        target_funcs: List[Dict[str, str]],
+        callers_lookup: Dict[str, List[Dict[str, Any]]],
+    ) -> List[Dict[str, str]]:
+        """
+        Filter out functions that have no callers, unless they are entry points.
+        Entry points (main/WinMain/DllMain/entry) are always kept.
+        """
+        filtered: List[Dict[str, str]] = []
+        for item in target_funcs:
+            name = item.get("name")
+            if not name:
+                continue
+            # Always keep entry point functions
+            if self._is_entry_point_function(name):
+                filtered.append(item)
+                continue
+            # Keep functions that have at least one caller
+            callers = callers_lookup.get(name, [])
+            if len(callers) > 0:
+                filtered.append(item)
+        return filtered
 
     def _select_key_function_analyses(self, function_analysis_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         # Refactor: keep ATT&CK selection logic isolated and testable.
@@ -151,11 +202,15 @@ class AnalysisCoordinator:
         logger.info("Step 7: Generating global call graph...")
         await self.ghidra.get_callgraph()
 
+        # 7.5 Fetch function cross-references (callers/callees)
+        logger.info("Step 7.5: Fetching function cross-references...")
+        func_names = self._extract_function_names(functions_data)
+        function_xrefs = await self.ghidra.get_function_xrefs_batch(func_names)
+        callers_lookup = self._build_callers_lookup(function_xrefs)
+        logger.info(f"Got xrefs for {len(function_xrefs)} functions")
+
         # 8. Decompile (Batch)
         logger.info(f"Step 8: Decompiling functions (Batch mode)...")
-        
-        # 提取所有函数名称
-        func_names = self._extract_function_names(functions_data)
         
         # 调用批量反编译接口 (后端支持通过名称或地址反编译)
         decompiled_codes_raw = await self.ghidra.get_decompiled_codes_batch(func_names)
@@ -168,6 +223,11 @@ class AnalysisCoordinator:
 
         # 分析目标函数：FUN_* / fcn.* 自动命名函数 + 常见入口函数（main/WinMain/DllMain 等）
         target_funcs = self._filter_target_functions(decompiled_codes)
+        
+        # 9.1 Filter out functions with no callers (except entry points)
+        # 如果一个函数没有被其他任何函数调用，则不分析该函数（入口函数例外）
+        target_funcs = self._filter_functions_with_callers(target_funcs, callers_lookup)
+        logger.info(f"After caller filter: {len(target_funcs)} functions to analyze")
         
         if not target_funcs:
             logger.info("No target functions found for AI analysis, skipping function analysis step.")
@@ -199,6 +259,7 @@ class AnalysisCoordinator:
             "functions": functions_data,
             "strings": strings_data,
             "decompiled_code": decompiled_codes,
+            "function_xrefs": function_xrefs,
             "function_analyses": function_analysis_results,
             "malware_report": final_malware_report
         }

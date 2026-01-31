@@ -127,6 +127,7 @@ class AnalysisWorker:
             task.functions = result.get("functions")
             task.strings = result.get("strings")
             task.decompiled_code = result.get("decompiled_code")
+            task.function_xrefs = result.get("function_xrefs")
             task.function_analyses = result.get("function_analyses")
             task.malware_report = result.get("malware_report")
 

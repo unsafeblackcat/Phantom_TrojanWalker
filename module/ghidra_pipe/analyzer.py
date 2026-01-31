@@ -465,6 +465,119 @@ class GhidraAnalyzer:
         except Exception as e:
             logger.error(f"Error generating call graph: {e}")
             return {}
+
+    def get_function_xrefs(self, address_or_name: str) -> Optional[Dict[str, Any]]:
+        """
+        Get cross-references (callers and callees) for a single function.
+        Returns dict with: name, offset, callers, callees.
+        Each caller/callee is {name, offset}.
+        """
+        if not self._program:
+            return None
+
+        try:
+            func = self._find_function(address_or_name)
+            if not func:
+                return None
+
+            func_manager = self._program.getFunctionManager()
+            ref_manager = self._program.getReferenceManager()
+
+            func_name = func.getName()
+            func_entry = func.getEntryPoint()
+            func_offset = func_entry.getOffset() if func_entry else 0
+
+            # Get callees: functions this function calls
+            callees = self._get_callees(func, func_manager, ref_manager)
+
+            # Get callers: functions that call this function
+            callers = self._get_callers(func, func_manager, ref_manager)
+
+            return {
+                "name": func_name,
+                "offset": func_offset,
+                "callers": callers,
+                "callees": callees,
+            }
+
+        except Exception as e:
+            logger.error(f"Error getting xrefs for {address_or_name}: {e}")
+            return None
+
+    def get_function_xrefs_batch(self, addresses: List[str]) -> List[Dict[str, Any]]:
+        """
+        Batch get cross-references for multiple functions.
+        Input: list of function names or addresses (mixed).
+        Returns: list of {name, offset, callers, callees} dicts.
+        """
+        if not self._program:
+            return []
+
+        results = []
+        for addr in addresses:
+            try:
+                xref = self.get_function_xrefs(addr)
+                if xref:
+                    results.append(xref)
+            except Exception as e:
+                logger.warning(f"Error getting xrefs for {addr}: {e}")
+                continue
+
+        logger.info(f"Got xrefs for {len(results)}/{len(addresses)} functions")
+        return results
+
+    def _get_callees(self, func: Any, func_manager: Any, ref_manager: Any) -> List[Dict[str, Any]]:
+        """Get list of functions called by the given function."""
+        callees = []
+        seen = set()
+
+        body = func.getBody()
+        if not body:
+            return callees
+
+        ref_iter = ref_manager.getReferenceSourceIterator(body, True)
+        for ref in ref_iter:
+            if ref.getReferenceType().isCall():
+                to_addr = ref.getToAddress()
+                callee = func_manager.getFunctionAt(to_addr)
+                if callee:
+                    callee_name = callee.getName()
+                    if callee_name not in seen:
+                        seen.add(callee_name)
+                        callee_entry = callee.getEntryPoint()
+                        callees.append({
+                            "name": callee_name,
+                            "offset": callee_entry.getOffset() if callee_entry else 0,
+                        })
+
+        return callees
+
+    def _get_callers(self, func: Any, func_manager: Any, ref_manager: Any) -> List[Dict[str, Any]]:
+        """Get list of functions that call the given function."""
+        callers = []
+        seen = set()
+
+        func_entry = func.getEntryPoint()
+        if not func_entry:
+            return callers
+
+        # Get references TO this function's entry point
+        refs_to = ref_manager.getReferencesTo(func_entry)
+        for ref in refs_to:
+            if ref.getReferenceType().isCall():
+                from_addr = ref.getFromAddress()
+                caller = func_manager.getFunctionContaining(from_addr)
+                if caller:
+                    caller_name = caller.getName()
+                    if caller_name not in seen:
+                        seen.add(caller_name)
+                        caller_entry = caller.getEntryPoint()
+                        callers.append({
+                            "name": caller_name,
+                            "offset": caller_entry.getOffset() if caller_entry else 0,
+                        })
+
+        return callers
     
     def _find_function(self, address_or_name: str) -> Optional[Any]:
         """

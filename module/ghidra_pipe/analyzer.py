@@ -13,13 +13,14 @@ logger = logging.getLogger(__name__)
 # Lazy-loaded Ghidra/Java classes (populated after pyghidra.start())
 _ghidra_started = False
 _DecompInterface = None
+_DecompileOptions = None
 _ConsoleTaskMonitor = None
 _StringDataInstance = None
 
 
 def _ensure_ghidra_started():
     """Initialize pyghidra/JVM if not already started."""
-    global _ghidra_started, _DecompInterface, _ConsoleTaskMonitor, _StringDataInstance
+    global _ghidra_started, _DecompInterface, _DecompileOptions, _ConsoleTaskMonitor, _StringDataInstance
     if _ghidra_started:
         return
     
@@ -27,11 +28,12 @@ def _ensure_ghidra_started():
     pyghidra.start()
     
     # Import Ghidra Java classes via JPype bridge
-    from ghidra.app.decompiler import DecompInterface
+    from ghidra.app.decompiler import DecompInterface, DecompileOptions
     from ghidra.util.task import ConsoleTaskMonitor
     from ghidra.program.model.data import StringDataInstance
     
     _DecompInterface = DecompInterface
+    _DecompileOptions = DecompileOptions
     _ConsoleTaskMonitor = ConsoleTaskMonitor
     _StringDataInstance = StringDataInstance
     _ghidra_started = True
@@ -81,6 +83,14 @@ class GhidraAnalyzer:
 
             # Initialize decompiler interface
             self._decompiler = _DecompInterface()
+            options = _DecompileOptions()
+            options.setWARNCommentIncluded(False)
+            options.setHeadCommentIncluded(False)
+            options.setPLATECommentIncluded(False)
+            options.setPRECommentIncluded(False)
+            options.setPOSTCommentIncluded(False)
+            options.setEOLCommentIncluded(False)
+            self._decompiler.setOptions(options)
             self._decompiler.openProgram(self._program)
 
             logger.info(f"Opened binary: {self.file_path}")

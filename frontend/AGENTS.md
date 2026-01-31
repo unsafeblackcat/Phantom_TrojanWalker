@@ -1,6 +1,6 @@
 # frontend/AGENTS.md
 
-本模块是 **前端 UI（React + Vite）**：负责样本上传、任务状态轮询、结果展示（元数据、LLM 报告等）。前端不直接访问 rz_pipe，也不直接访问 agents；所有数据都通过 `backend` 的 `/api/*` 获取。
+本模块是 **前端 UI（React + Vite）**：负责样本上传、任务状态轮询、结果展示（元数据、LLM 报告等）。前端不直接访问 ghidra_pipe，也不直接访问 agents；所有数据都通过 `backend` 的 `/api/*` 获取。
 
 ---
 
@@ -13,7 +13,7 @@
 
 **本模块不做什么**
 - 不保存任务数据到 DB（由 backend 完成）。
-- 不做二进制分析/反编译（由 rz_pipe 完成）。
+- 不做二进制分析/反编译（由 ghidra_pipe 完成）。
 - 不做 LLM 调用（由 agents 完成）。
 
 ---
@@ -116,4 +116,4 @@
 ## 8. 与其他模块的契约（速查）
 
 - 只调用 backend：`/api/analyze`、`/api/tasks/{task_id}`、`/api/result/{sha256}`、（可选）`/api/history`
-- 不直接访问 rz_pipe（:8000）与 agents（legacy :8002）
+- 不直接访问 ghidra_pipe（:8000）与 agents（legacy :8002）

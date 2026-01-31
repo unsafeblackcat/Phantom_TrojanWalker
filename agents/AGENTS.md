@@ -56,6 +56,7 @@
 5. **函数列表**：`GhidraClient.get_functions()`（来自 FunctionManager）并整理为 `functions_data`
 6. **字符串**：`GhidraClient.get_strings()`（来自 Listing DefinedData）
 7. **全局调用图**：`GhidraClient.get_callgraph()`（来自 ReferenceManager）
+7.5 **函数交叉引用**：`GhidraClient.get_function_xrefs_batch(func_names)`（POST `/xrefs_batch`）
 8. **批量反编译**：`GhidraClient.get_decompiled_codes_batch(func_names)`（POST `/decompile_batch`）
 9. **函数级 AI 分析**：`FunctionAnalysisAgent.analyze_decompiled_batch(target_funcs)`
 9.5 **筛选关键函数**：仅保留 `attack_matches` 非空的函数交给最终报告（ATT&CK 聚焦降噪）
@@ -66,6 +67,7 @@
 - `functions`
 - `strings`
 - `decompiled_code`
+- `function_xrefs`
 - `function_analyses`
 - `malware_report`
 

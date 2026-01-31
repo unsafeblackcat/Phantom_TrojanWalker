@@ -1,6 +1,6 @@
 # module/AGENTS.md
 
-本模块目前主要包含 `ghidra_pipe/`：一个 **Ghidra 引擎 HTTP 服务**（FastAPI），封装 pyghidra 调用，为上层提供结构化的二进制分析数据与反编译结果。
+本模块目前主要包含 `ghidra_pipe/`：一个 **Ghidra 引擎 HTTP 服务**（FastAPI），封装 pyghidra 调用，为上层提供结构化的二进制分析数据、交叉引用与反编译结果。
 
 > 关键设计：服务端维护"当前打开的二进制"的全局状态，因此系统整体分析必须单并发执行（由 backend worker 强制）。
 
@@ -9,7 +9,7 @@
 ## 1. 模块边界与职责
 
 **本模块做什么**
-- 启动一个 HTTP 服务（默认 :8000），暴露 `upload/analyze/metadata/functions/strings/callgraph/decompile_batch` 等接口。
+- 启动一个 HTTP 服务（默认 :8000），暴露 `upload/analyze/metadata/functions/strings/callgraph/xrefs/xrefs_batch/decompile_batch` 等接口。
 - 管理 pyghidra 生命周期：初始化 JVM、打开二进制、执行分析、返回 JSON。
 - 通过 Ghidra DecompInterface 提供反编译能力。
 
@@ -33,6 +33,7 @@
     - `get_strings()`：字符串
     - `get_global_call_graph()`：全局调用图
     - `get_decompiled_code_batch()`：批量反编译（DecompInterface）
+    - `get_function_xrefs()` / `get_function_xrefs_batch()`：函数 callers/callees
 
 ---
 
@@ -92,6 +93,18 @@
 
 输出：JSON 列表
 - `[{"address": "<name_or_addr>", "code": "<decompiled_text>"}, ...]`
+
+### 4.9 GET /xrefs
+输入：query 参数 `addr=<function_name_or_addr>`
+
+输出：
+- `{name, offset, callers, callees}`
+
+### 4.10 POST /xrefs_batch
+输入：JSON 数组 `List[str]`
+
+输出：
+- `[{name, offset, callers, callees}, ...]`
 
 重要语义：
 - 批量反编译逐个执行 DecompInterface.decompileFunction。

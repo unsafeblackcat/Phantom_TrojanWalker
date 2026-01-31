@@ -2,22 +2,21 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 // https://vitejs.dev/config/
+// Refactor: reuse proxy config to avoid duplication.
+const backendTarget = 'http://localhost:8001'
+const apiProxy = {
+  '/api': {
+    target: backendTarget,
+    changeOrigin: true,
+  },
+}
+
 export default defineConfig({
   plugins: [react()],
   server: {
-    proxy: {
-      '/api': {
-        target: 'http://localhost:8001',
-        changeOrigin: true,
-      },
-    },
+    proxy: apiProxy,
   },
   preview: {
-    proxy: {
-      '/api': {
-        target: 'http://localhost:8001',
-        changeOrigin: true,
-      },
-    },
+    proxy: apiProxy,
   },
 })

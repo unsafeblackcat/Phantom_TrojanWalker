@@ -2,6 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Refactor: keep global body styling in one place for readability. */
 body {
   @apply bg-slate-900 text-slate-100;
 }

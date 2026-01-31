@@ -5,6 +5,7 @@ import path from 'node:path';
 import { URL } from 'node:url';
 
 const DIST_DIR = process.env.DIST_DIR || '/app/dist';
+const DIST_ROOT = path.resolve(DIST_DIR);
 const PORT = Number(process.env.PORT || 8080);
 
 // Backend base URL for server-side proxy. IMPORTANT: browser never sees this.
@@ -21,38 +22,31 @@ function send(res, status, body, headers = {}) {
   res.end(body);
 }
 
+// Refactor: map-based content type lookup keeps logic declarative.
+const CONTENT_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.ico': 'image/x-icon',
+  '.txt': 'text/plain; charset=utf-8',
+};
+
 function contentTypeFor(filePath) {
   const ext = path.extname(filePath).toLowerCase();
-  switch (ext) {
-    case '.html':
-      return 'text/html; charset=utf-8';
-    case '.js':
-      return 'text/javascript; charset=utf-8';
-    case '.css':
-      return 'text/css; charset=utf-8';
-    case '.json':
-      return 'application/json; charset=utf-8';
-    case '.svg':
-      return 'image/svg+xml';
-    case '.png':
-      return 'image/png';
-    case '.jpg':
-    case '.jpeg':
-      return 'image/jpeg';
-    case '.ico':
-      return 'image/x-icon';
-    case '.txt':
-      return 'text/plain; charset=utf-8';
-    default:
-      return 'application/octet-stream';
-  }
+  return CONTENT_TYPES[ext] || 'application/octet-stream';
 }
 
+// Refactor: isolate path safety checks into a single helper.
 function safeResolve(requestPath) {
   const decoded = decodeURIComponent(requestPath);
   const stripped = decoded.replace(/^\/+/, '');
   const resolved = path.resolve(DIST_DIR, stripped);
-  if (!resolved.startsWith(path.resolve(DIST_DIR))) return null;
+  if (!resolved.startsWith(DIST_ROOT)) return null;
   return resolved;
 }
 

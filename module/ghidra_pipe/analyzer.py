@@ -5,6 +5,7 @@ Provides functions, strings, metadata, call graph, and decompilation.
 import os
 import logging
 import tempfile
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -58,13 +59,14 @@ class GhidraAnalyzer:
         """
         try:
             _ensure_ghidra_started()
-            
+
             import pyghidra
-            
-            # Create a temporary project directory for this analysis
+
+            # Create a temporary project directory for this analysis.
+            # NOTE: Extracted for clarity and to isolate side effects.
             self._project_dir = tempfile.mkdtemp(prefix="ghidra_project_")
             project_name = "TempProject"
-            
+
             # Open the program with pyghidra (analyze=False, we'll do it explicitly)
             # Store the context manager to prevent garbage collection closing the program
             self._ctx = pyghidra.open_program(
@@ -74,16 +76,16 @@ class GhidraAnalyzer:
                 project_name=project_name
             )
             self._flat_api = self._ctx.__enter__()
-            
+
             self._program = self._flat_api.getCurrentProgram()
-            
+
             # Initialize decompiler interface
             self._decompiler = _DecompInterface()
             self._decompiler.openProgram(self._program)
-            
+
             logger.info(f"Opened binary: {self.file_path}")
             return True
-            
+
         except Exception as e:
             logger.error(f"Error opening binary with Ghidra: {e}")
             return False
@@ -116,12 +118,10 @@ class GhidraAnalyzer:
         functions = []
         try:
             func_manager = self._program.getFunctionManager()
-            func_iter = func_manager.getFunctions(True)  # Forward iteration
-            
-            for func in func_iter:
+            for func in self._iter_functions(func_manager):
                 entry = func.getEntryPoint()
                 body = func.getBody()
-                
+
                 func_info = {
                     "name": func.getName(),
                     "offset": entry.getOffset() if entry else 0,
@@ -149,28 +149,24 @@ class GhidraAnalyzer:
         try:
             listing = self._program.getListing()
             data_iter = listing.getDefinedData(True)  # Forward iteration
-            
+
             for data in data_iter:
-                # Check if this data is a string type
-                data_type = data.getDataType()
-                type_name = data_type.getName().lower() if data_type else ""
-                
-                if "string" in type_name or "unicode" in type_name:
-                    try:
-                        value = data.getValue()
-                        if value is not None:
-                            str_value = str(value)
-                            if str_value and len(str_value) > 0:
-                                addr = data.getAddress()
-                                strings.append({
-                                    "string": str_value,
-                                    "vaddr": addr.getOffset() if addr else 0,
-                                    "section": "",  # Ghidra doesn't expose section info directly here
-                                    "type": type_name,
-                                    "length": len(str_value)
-                                })
-                    except Exception:
-                        pass  # Skip problematic strings
+                type_name = self._get_data_type_name(data)
+                if not self._is_string_type(type_name):
+                    continue  # Guard clause to reduce nesting
+
+                str_value = self._safe_string_value(data)
+                if not str_value:
+                    continue
+
+                addr = data.getAddress()
+                strings.append({
+                    "string": str_value,
+                    "vaddr": addr.getOffset() if addr else 0,
+                    "section": "",  # Ghidra doesn't expose section info directly here
+                    "type": type_name,
+                    "length": len(str_value)
+                })
             
             logger.info(f"Found {len(strings)} strings")
             return strings
@@ -191,30 +187,150 @@ class GhidraAnalyzer:
             lang = self._program.getLanguage()
             compiler_spec = self._program.getCompilerSpec()
             exe_format = self._program.getExecutableFormat()
-            
-            # Build info structure compatible with frontend
-            info = {
-                "core": {
-                    "file": os.path.basename(self.file_path),
-                    "format": exe_format or "unknown",
-                    "mode": str(lang.getLanguageDescription().getSize()) if lang else "unknown",
-                    "type": "executable",
-                },
-                "bin": {
-                    "arch": str(lang.getProcessor()) if lang else "unknown",
-                    "bits": lang.getLanguageDescription().getSize() if lang else 0,
-                    "machine": str(lang.getLanguageDescription().getProcessor()) if lang else "unknown",
-                    "os": compiler_spec.getCompilerSpecID().getIdAsString() if compiler_spec else "unknown",
-                    "endian": "little" if lang and lang.isBigEndian() == False else "big",
-                    "compiler": compiler_spec.getCompilerSpecID().getIdAsString() if compiler_spec else "unknown",
-                }
-            }
-            
-            return info
-            
+
+            # 说明：将复杂逻辑拆分成小函数，降低嵌套、提升可读性。
+            file_size, human_size = self._get_file_sizes()
+            subsys, signed, compiled = self._get_pe_metadata(exe_format)
+
+            return self._build_info_payload(
+                lang=lang,
+                compiler_spec=compiler_spec,
+                exe_format=exe_format,
+                file_size=file_size,
+                human_size=human_size,
+                subsys=subsys,
+                signed=signed,
+                compiled=compiled,
+            )
+
         except Exception as e:
             logger.error(f"Error getting info: {e}")
             return {}
+
+    def _get_file_sizes(self) -> tuple[Optional[int], Optional[str]]:
+        """Get raw file size and human-readable size."""
+        try:
+            file_size = os.path.getsize(self.file_path)
+        except Exception:
+            return None, None
+
+        return file_size, self._format_file_size(file_size)
+
+    def _format_file_size(self, file_size: int) -> Optional[str]:
+        """Format file size to a human-readable string."""
+        try:
+            units = ["B", "KB", "MB", "GB", "TB"]
+            size = float(file_size)
+            idx = 0
+            while size >= 1024 and idx < len(units) - 1:
+                size /= 1024.0
+                idx += 1
+            return f"{size:.2f}{units[idx]}" if idx > 0 else f"{int(size)}{units[idx]}"
+        except Exception:
+            return None
+
+    def _get_pe_metadata(self, exe_format: Any) -> tuple[Optional[str], Optional[bool], Optional[str]]:
+        """Extract PE-specific metadata if the binary is PE format."""
+        subsys = None
+        signed = None
+        compiled = None
+
+        if not exe_format or "PE" not in str(exe_format).upper():
+            return subsys, signed, compiled
+
+        try:
+            from java.io import File
+            from ghidra.app.util.bin import RandomAccessByteProvider
+            from ghidra.app.util.bin.format.pe import PortableExecutable
+
+            # Use RandomAccessByteProvider(File, permissions)
+            provider = RandomAccessByteProvider(File(self.file_path), "r")
+            try:
+                # Pass SectionLayout.FILE to indicate parsing from file on disk
+                pe = PortableExecutable(provider, PortableExecutable.SectionLayout.FILE)
+                nt = pe.getNTHeader()
+                if nt is None:
+                    return subsys, signed, compiled
+
+                file_header = nt.getFileHeader()
+                optional_header = nt.getOptionalHeader()
+
+                if file_header is not None:
+                    ts = file_header.getTimeDateStamp()
+                    if ts:
+                        compiled = datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
+
+                if optional_header is None:
+                    return subsys, signed, compiled
+
+                subsys = self._map_pe_subsystem(optional_header.getSubsystem())
+                signed = self._is_pe_signed(optional_header)
+                return subsys, signed, compiled
+            finally:
+                try:
+                    provider.close()
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"Error parsing PE headers: {e}")
+            return subsys, signed, compiled
+
+    def _map_pe_subsystem(self, subsys_val: Any) -> str:
+        """Map PE subsystem value to human-readable string."""
+        SUBSYSTEM_MAP = {
+            1: "Native", 2: "Windows GUI", 3: "Windows CUI",
+            5: "OS/2 CUI", 7: "POSIX CUI", 9: "Windows CE GUI",
+            10: "EFI App", 11: "EFI Boot Service Driver",
+            12: "EFI Runtime Driver", 13: "EFI ROM",
+            14: "XBOX", 16: "Windows Boot App"
+        }
+        return SUBSYSTEM_MAP.get(subsys_val, str(subsys_val))
+
+    def _is_pe_signed(self, optional_header: Any) -> Optional[bool]:
+        """Check PE security directory for signature presence."""
+        data_dirs = optional_header.getDataDirectories()
+        if not data_dirs or len(data_dirs) <= 4:
+            return False
+        sec_dir = data_dirs[4]
+        try:
+            return (sec_dir.getSize() or 0) > 0
+        except Exception:
+            return False
+
+    def _build_info_payload(
+        self,
+        *,
+        lang: Any,
+        compiler_spec: Any,
+        exe_format: Any,
+        file_size: Optional[int],
+        human_size: Optional[str],
+        subsys: Optional[str],
+        signed: Optional[bool],
+        compiled: Optional[str],
+    ) -> Dict[str, Any]:
+        """Build frontend-compatible info payload."""
+        return {
+            "core": {
+                "file": os.path.basename(self.file_path),
+                "format": exe_format or "unknown",
+                "mode": str(lang.getLanguageDescription().getSize()) if lang else "unknown",
+                "type": "executable",
+                "size": file_size,
+                "humansz": human_size,
+            },
+            "bin": {
+                "arch": str(lang.getProcessor()) if lang else "unknown",
+                "bits": lang.getLanguageDescription().getSize() if lang else 0,
+                "machine": str(lang.getLanguageDescription().getProcessor()) if lang else "unknown",
+                "os": compiler_spec.getCompilerSpecID().getIdAsString() if compiler_spec else "unknown",
+                "endian": "little" if (lang and not lang.isBigEndian()) else ("big" if lang else "unknown"),
+                "compiler": compiler_spec.getCompilerSpecID().getIdAsString() if compiler_spec else "unknown",
+                "subsys": subsys,
+                "signed": signed,
+                "compiled": compiled,
+            }
+        }
     
     def get_decompiled_code(self, address_or_name: str) -> Optional[Dict[str, str]]:
         """
@@ -296,8 +412,7 @@ class GhidraAnalyzer:
             func_map = {}  # name -> node index
             
             # First pass: collect all functions as nodes
-            func_iter = func_manager.getFunctions(True)
-            for idx, func in enumerate(func_iter):
+            for idx, func in enumerate(self._iter_functions(func_manager)):
                 name = func.getName()
                 nodes.append({
                     "id": idx,
@@ -307,8 +422,7 @@ class GhidraAnalyzer:
                 func_map[name] = idx
             
             # Second pass: find call references to build edges
-            func_iter = func_manager.getFunctions(True)
-            for func in func_iter:
+            for func in self._iter_functions(func_manager):
                 caller_name = func.getName()
                 if caller_name not in func_map:
                     continue
@@ -352,31 +466,20 @@ class GhidraAnalyzer:
         func_manager = self._program.getFunctionManager()
         
         # Try to parse as hex address first
-        try:
-            if address_or_name.startswith("0x"):
-                addr_val = int(address_or_name, 16)
-            elif address_or_name.startswith("fcn."):
-                # Rizin-style auto-named function (fcn.00401000)
-                addr_val = int(address_or_name[4:], 16)
-            else:
-                addr_val = None
-            
-            if addr_val is not None:
-                addr_factory = self._program.getAddressFactory()
-                addr = addr_factory.getDefaultAddressSpace().getAddress(addr_val)
-                func = func_manager.getFunctionAt(addr)
-                if func:
-                    return func
-                # Also try containing function
-                func = func_manager.getFunctionContaining(addr)
-                if func:
-                    return func
-        except (ValueError, Exception):
-            pass
-        
+        addr_val = self._parse_address_value(address_or_name)
+        if addr_val is not None:
+            addr_factory = self._program.getAddressFactory()
+            addr = addr_factory.getDefaultAddressSpace().getAddress(addr_val)
+            func = func_manager.getFunctionAt(addr)
+            if func:
+                return func
+            # Also try containing function
+            func = func_manager.getFunctionContaining(addr)
+            if func:
+                return func
+
         # Try to find by name
-        func_iter = func_manager.getFunctions(True)
-        for func in func_iter:
+        for func in self._iter_functions(func_manager):
             if func.getName() == address_or_name:
                 return func
         
@@ -416,6 +519,51 @@ class GhidraAnalyzer:
             
         except Exception as e:
             logger.error(f"Error closing analyzer: {e}")
+
+    # -----------------------------
+    # Internal helpers (refactor)
+    # -----------------------------
+    def _iter_functions(self, func_manager: Any):
+        """Yield functions in a consistent order.
+
+        Refactor note: centralizes the iteration pattern for readability.
+        """
+        return func_manager.getFunctions(True)  # Forward iteration
+
+    def _get_data_type_name(self, data: Any) -> str:
+        """Safely get data type name in lowercase."""
+        data_type = data.getDataType()
+        return data_type.getName().lower() if data_type else ""
+
+    def _is_string_type(self, type_name: str) -> bool:
+        """Check whether a data type name looks like a string."""
+        return "string" in type_name or "unicode" in type_name
+
+    def _safe_string_value(self, data: Any) -> str:
+        """Safely extract a string value from data.
+
+        Refactor note: isolates error handling to reduce nesting in callers.
+        """
+        try:
+            value = data.getValue()
+            if value is None:
+                return ""
+            return str(value) or ""
+        except Exception:
+            return ""
+
+    def _parse_address_value(self, address_or_name: str) -> Optional[int]:
+        """Parse a string into an address value if possible."""
+        try:
+            if address_or_name.startswith("0x"):
+                return int(address_or_name, 16)
+            if address_or_name.startswith("fcn."):
+                # Rizin-style auto-named function (fcn.00401000)
+                return int(address_or_name[4:], 16)
+        except (ValueError, Exception):
+            # Refactor note: keep parsing errors local and return None to fall back.
+            return None
+        return None
     
     def __enter__(self):
         self.open()

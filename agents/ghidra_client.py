@@ -13,21 +13,40 @@ logger = logging.getLogger(__name__)
 
 class GhidraClient:
     """HTTP client for communicating with the Ghidra Pipe FastAPI service."""
-    
+
+    # NOTE: Use named constants for easier tuning and to avoid magic numbers.
+    DEFAULT_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
+    DEFAULT_RETRIES = 3
+
     def __init__(self, config: AppConfig):
         self.config = config
-        self.base_url = config.plugins["ghidra"].base_url
-        self.endpoints = config.plugins["ghidra"].endpoints
+        self.base_url = self._get_base_url(config)
+        self.endpoints = self._get_endpoints(config)
         # Default timeout settings
-        self.timeout = httpx.Timeout(60.0, connect=10.0)
+        self.timeout = self.DEFAULT_TIMEOUT
         # Configure retry transport
-        self.transport = httpx.AsyncHTTPTransport(retries=3)
+        self.transport = httpx.AsyncHTTPTransport(retries=self.DEFAULT_RETRIES)
+
+    def _get_base_url(self, config: AppConfig) -> str:
+        """Resolve base URL from config with explicit error handling."""
+        try:
+            return config.plugins["ghidra"].base_url
+        except Exception as exc:
+            # Refactor note: make configuration errors explicit early.
+            raise GhidraBackendError("Missing Ghidra base_url in config") from exc
+
+    def _get_endpoints(self, config: AppConfig) -> Dict[str, str]:
+        """Resolve endpoint mappings from config with explicit error handling."""
+        try:
+            return config.plugins["ghidra"].endpoints
+        except Exception as exc:
+            # Refactor note: make configuration errors explicit early.
+            raise GhidraBackendError("Missing Ghidra endpoints in config") from exc
 
     async def _request(self, method: str, endpoint_key: str, **kwargs) -> Any:
         """Make an HTTP request to the Ghidra backend."""
-        path = self.endpoints.get(endpoint_key, f"/{endpoint_key}")
-        url = f"{self.base_url}{path}"
-        
+        url = self._build_url(endpoint_key)
+
         # Allow caller to override timeout
         timeout = kwargs.pop("timeout", self.timeout)
 
@@ -35,19 +54,36 @@ class GhidraClient:
             try:
                 resp = await client.request(method, url, **kwargs)
                 resp.raise_for_status()
-                try:
-                    return resp.json()
-                except Exception:
-                    return resp.text
+                return self._safe_json_or_text(resp)
             except httpx.HTTPStatusError as e:
-                logger.error(f"HTTP error {e.response.status_code} for {url}")
-                raise GhidraBackendError(f"Ghidra backend returned error: {e.response.status_code}") from e
+                logger.error("HTTP error %s for %s", e.response.status_code, url)
+                raise GhidraBackendError(
+                    f"Ghidra backend returned error: {e.response.status_code}"
+                ) from e
             except httpx.RequestError as e:
-                logger.error(f"Request error for {url}: {e}")
+                logger.error("Request error for %s: %s", url, e)
                 raise GhidraBackendError(f"Failed to connect to Ghidra backend: {e}") from e
             except Exception as e:
-                logger.error(f"Unexpected error for {url}: {e}")
+                logger.error("Unexpected error for %s: %s", url, e)
                 raise GhidraBackendError(f"Unexpected error: {e}") from e
+
+    def _build_url(self, endpoint_key: str) -> str:
+        """Build a request URL from an endpoint key.
+
+        Refactor note: isolate URL construction to reduce duplication and errors.
+        """
+        path = self.endpoints.get(endpoint_key, f"/{endpoint_key}")
+        return f"{self.base_url}{path}"
+
+    def _safe_json_or_text(self, response: httpx.Response) -> Any:
+        """Return JSON content when possible, otherwise return text.
+
+        Refactor note: centralizes response parsing with safe fallback.
+        """
+        try:
+            return response.json()
+        except Exception:
+            return response.text
 
     async def check_health(self):
         """Check if the Ghidra backend is healthy."""
@@ -68,24 +104,27 @@ class GhidraClient:
     async def get_metadata(self) -> Dict[str, Any]:
         """Get binary metadata."""
         res = await self._request("GET", "metadata", timeout=20.0)
-        return res if isinstance(res, dict) else {}
+        return self._coerce_dict(res)
 
     async def get_functions(self) -> List[Dict[str, Any]]:
         """Get list of functions."""
         res = await self._request("GET", "functions", timeout=30.0)
-        return res if isinstance(res, list) else []
+        return self._coerce_list(res)
 
     async def get_strings(self) -> List[str]:
         """Get strings from the binary."""
         res = await self._request("GET", "strings", timeout=30.0)
-        if isinstance(res, list):
-            return [s.get("string") for s in res if isinstance(s, dict) and "string" in s]
-        return []
+        string_entries = self._coerce_list(res)
+        return [
+            s.get("string")
+            for s in string_entries
+            if isinstance(s, dict) and "string" in s
+        ]
 
     async def get_callgraph(self) -> Dict[str, Any]:
         """Get global call graph."""
         res = await self._request("GET", "callgraph", timeout=60.0)
-        return res if isinstance(res, dict) else {}
+        return self._coerce_dict(res)
 
     async def get_decompiled_codes_batch(self, addresses: List[str]) -> List[Dict[str, str]]:
         """
@@ -93,4 +132,19 @@ class GhidraClient:
         Returns list of {address, code} dicts.
         """
         # Batch decompilation can be very time-consuming with Ghidra
-        return await self._request("POST", "decompile_batch", json=addresses, timeout=900.0)
+        res = await self._request("POST", "decompile_batch", json=addresses, timeout=900.0)
+        return self._coerce_list(res)
+
+    def _coerce_dict(self, value: Any) -> Dict[str, Any]:
+        """Normalize unknown response payload to dict.
+
+        Refactor note: reduces repeated isinstance checks.
+        """
+        return value if isinstance(value, dict) else {}
+
+    def _coerce_list(self, value: Any) -> List[Any]:
+        """Normalize unknown response payload to list.
+
+        Refactor note: reduces repeated isinstance checks.
+        """
+        return value if isinstance(value, list) else []

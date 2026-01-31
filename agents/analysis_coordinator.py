@@ -13,60 +13,113 @@ class AnalysisCoordinator:
         self.func_agent = func_agent
         self.malware_agent = malware_agent
 
+    def _normalize_func_name(self, name: str) -> str:
+        if not name:
+            return ""
+        base = str(name).strip()
+        # Ghidra/disassemblers often prefix symbols, keep the last segment for matching
+        for prefix in ("FUN_", "thunk_FUN_", "LAB_", "DAT_", "PTR_", "s_"):
+            if base.startswith(prefix):
+                base = base[len(prefix):]
+        # Handle legacy rizin prefixes for compatibility
+        for prefix in ("sym.", "fcn.", "sub.", "loc.", "imp.", "obj.", "dbg."):
+            if base.startswith(prefix):
+                base = base[len(prefix):]
+        # Sometimes symbols still contain dots/underscores after stripping
+        if "." in base:
+            base = base.split(".")[-1]
+        base = base.lstrip("_")
+        return base.lower()
+
+    def _is_ai_target_function(self, name: str) -> bool:
+        if not name:
+            return False
+        # Ghidra auto-named functions start with FUN_
+        if str(name).startswith("FUN_"):
+            return True
+        # Legacy rizin format
+        if str(name).startswith("fcn."):
+            return True
+        normalized = self._normalize_func_name(str(name))
+        # Cover common entrypoints across C/C++ and Windows binaries
+        interesting = {
+            "main",
+            "wmain",
+            "winmain",
+            "wwinmain",
+            "dllmain",
+            # Common CRT/loader entrypoints
+            "maincrtstartup",
+            "winmaincrtstartup",
+            "dllmaincrtstartup",
+            "tmaincrtstartup",
+            "wtmaincrtstartup",
+            # Linux/ELF entrypoints
+            "_start",
+            "start",
+            "entry",
+        }
+        return normalized in interesting
+
+    def _build_functions_payload(self, raw_funcs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        # Refactor: isolate mapping logic for readability and reuse.
+        return [
+            {
+                "name": f.get("name"),
+                "offset": f.get("offset"),
+                "size": f.get("size"),
+                "signature": f.get("signature"),
+            }
+            for f in raw_funcs
+        ]
+
+    def _extract_function_names(self, functions_data: List[Dict[str, Any]]) -> List[str]:
+        # Refactor: keep filtering rules in one place.
+        return [f["name"] for f in functions_data if f.get("name")]
+
+    def _map_decompiled_results(self, decompiled_codes_raw: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+        # Refactor: normalize backend results and guard missing fields.
+        mapped: List[Dict[str, str]] = []
+        # 后端返回格式为 [{"address": "name_or_addr", "code": "..."}]
+        for item in decompiled_codes_raw:
+            name = item.get("address")  # address 字段包含我们发送的名称
+            code = item.get("code")
+            if code and name:
+                mapped.append({
+                    "name": name,
+                    "code": code,
+                })
+        return mapped
+
+    def _filter_target_functions(self, decompiled_codes: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        # Refactor: single-responsibility filtering step for AI analysis.
+        return [
+            item
+            for item in decompiled_codes
+            if self._is_ai_target_function(item.get("name"))
+        ]
+
+    def _select_key_function_analyses(self, function_analysis_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        # Refactor: keep ATT&CK selection logic isolated and testable.
+        key_results: List[Dict[str, Any]] = []
+        for item in function_analysis_results:
+            analysis = item.get("analysis") if isinstance(item, dict) else None
+            if not isinstance(analysis, dict):
+                continue
+            # skip errored analyses
+            if "error" in analysis:
+                continue
+            attack_matches = analysis.get("attack_matches")
+            if isinstance(attack_matches, list) and len(attack_matches) > 0:
+                key_results.append(item)
+        return key_results
+
     async def analyze_file(self, file: UploadFile) -> Dict[str, Any]:
         content = await file.read()
         return await self.analyze_content(file.filename, content, file.content_type)
 
     async def analyze_content(self, filename: str, content: bytes, content_type: str = "application/octet-stream") -> Dict[str, Any]:
         logger.info(f"Start analyzing file: {filename}")
-
-        def _normalize_func_name(name: str) -> str:
-            if not name:
-                return ""
-            base = str(name).strip()
-            # Ghidra/disassemblers often prefix symbols, keep the last segment for matching
-            for prefix in ("FUN_", "thunk_FUN_", "LAB_", "DAT_", "PTR_", "s_"):
-                if base.startswith(prefix):
-                    base = base[len(prefix):]
-            # Handle legacy rizin prefixes for compatibility
-            for prefix in ("sym.", "fcn.", "sub.", "loc.", "imp.", "obj.", "dbg."):
-                if base.startswith(prefix):
-                    base = base[len(prefix):]
-            # Sometimes symbols still contain dots/underscores after stripping
-            if "." in base:
-                base = base.split(".")[-1]
-            base = base.lstrip("_")
-            return base.lower()
-
-        def _is_ai_target_function(name: str) -> bool:
-            if not name:
-                return False
-            # Ghidra auto-named functions start with FUN_
-            if str(name).startswith("FUN_"):
-                return True
-            # Legacy rizin format
-            if str(name).startswith("fcn."):
-                return True
-            normalized = _normalize_func_name(str(name))
-            # Cover common entrypoints across C/C++ and Windows binaries
-            interesting = {
-                "main",
-                "wmain",
-                "winmain",
-                "wwinmain",
-                "dllmain",
-                # Common CRT/loader entrypoints
-                "maincrtstartup",
-                "winmaincrtstartup",
-                "dllmaincrtstartup",
-                "tmaincrtstartup",
-                "wtmaincrtstartup",
-                # Linux/ELF entrypoints
-                "_start",
-                "start",
-                "entry",
-            }
-            return normalized in interesting
         
         # 1. Check Health
         logger.info("Step 1: Checking Ghidra backend health...")
@@ -87,16 +140,8 @@ class AnalysisCoordinator:
         # 5. Fetch Functions
         logger.info("Step 5: Fetching and filtering functions...")
         raw_funcs = await self.ghidra.get_functions()
-        
-        functions_data = [
-            {
-                "name": f.get("name"),
-                "offset": f.get("offset"),
-                "size": f.get("size"),
-                "signature": f.get("signature")
-            }
-            for f in raw_funcs
-        ]
+
+        functions_data = self._build_functions_payload(raw_funcs)
 
         # 6. Fetch Strings
         logger.info("Step 6: Fetching strings from binary...")
@@ -110,32 +155,19 @@ class AnalysisCoordinator:
         logger.info(f"Step 8: Decompiling functions (Batch mode)...")
         
         # 提取所有函数名称
-        func_names = [f["name"] for f in functions_data if f.get("name")]
+        func_names = self._extract_function_names(functions_data)
         
         # 调用批量反编译接口 (后端支持通过名称或地址反编译)
         decompiled_codes_raw = await self.ghidra.get_decompiled_codes_batch(func_names)
         
         # 将原始结果直接映射到最终结果
-        decompiled_codes = []
-        # 后端返回格式为 [{"address": "name_or_addr", "code": "..."}]
-        for item in decompiled_codes_raw:
-            name = item.get("address") # 在这里 address 字段将包含我们发送的名称
-            code = item.get("code")
-            if code and name:
-                decompiled_codes.append({
-                    "name": name,
-                    "code": code
-                })
+        decompiled_codes = self._map_decompiled_results(decompiled_codes_raw)
 
         # 9. AI Analysis (Parallel)
         logger.info(f"Step 9: Analyzing {len(decompiled_codes)} decompiled functions...")
 
         # 分析目标函数：FUN_* / fcn.* 自动命名函数 + 常见入口函数（main/WinMain/DllMain 等）
-        target_funcs = [
-            item
-            for item in decompiled_codes
-            if _is_ai_target_function(item.get("name"))
-        ]
+        target_funcs = self._filter_target_functions(decompiled_codes)
         
         if not target_funcs:
             logger.info("No target functions found for AI analysis, skipping function analysis step.")
@@ -147,17 +179,7 @@ class AnalysisCoordinator:
         # 只把“能映射到 ATT&CK 的重点函数”交给最终报告 Agent，减少噪音。
         # 规则：只要 attack_matches 非空，就视为重点函数（不依赖 confidence 阈值）。
 
-        key_function_analysis_results = []
-        for item in function_analysis_results:
-            analysis = item.get("analysis") if isinstance(item, dict) else None
-            if not isinstance(analysis, dict):
-                continue
-            # skip errored analyses
-            if "error" in analysis:
-                continue
-            attack_matches = analysis.get("attack_matches")
-            if isinstance(attack_matches, list) and len(attack_matches) > 0:
-                key_function_analysis_results.append(item)
+        key_function_analysis_results = self._select_key_function_analyses(function_analysis_results)
 
         logger.info(
             "Step 9.5: Selected %d key functions (ATT&CK matched)",

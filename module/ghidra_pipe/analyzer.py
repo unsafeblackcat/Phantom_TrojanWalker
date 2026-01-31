@@ -444,13 +444,11 @@ class GhidraAnalyzer:
                 
                 # Iterate through the function body looking for call references
                 called_funcs = set()
-                ref_iter = ref_manager.getReferenceSourceIterator(body, True)
-                for ref in ref_iter:
-                    if ref.getReferenceType().isCall():
-                        to_addr = ref.getToAddress()
-                        callee = func_manager.getFunctionAt(to_addr)
-                        if callee:
-                            called_funcs.add(callee.getName())
+                for ref in self._iter_call_references_from_body(body, ref_manager):
+                    to_addr = ref.getToAddress()
+                    callee = func_manager.getFunctionAt(to_addr)
+                    if callee:
+                        called_funcs.add(callee.getName())
                 
                 for callee_name in called_funcs:
                     if callee_name in func_map:
@@ -535,20 +533,18 @@ class GhidraAnalyzer:
         if not body:
             return callees
 
-        ref_iter = ref_manager.getReferenceSourceIterator(body, True)
-        for ref in ref_iter:
-            if ref.getReferenceType().isCall():
-                to_addr = ref.getToAddress()
-                callee = func_manager.getFunctionAt(to_addr)
-                if callee:
-                    callee_name = callee.getName()
-                    if callee_name not in seen:
-                        seen.add(callee_name)
-                        callee_entry = callee.getEntryPoint()
-                        callees.append({
-                            "name": callee_name,
-                            "offset": callee_entry.getOffset() if callee_entry else 0,
-                        })
+        for ref in self._iter_call_references_from_body(body, ref_manager):
+            to_addr = ref.getToAddress()
+            callee = func_manager.getFunctionAt(to_addr)
+            if callee:
+                callee_name = callee.getName()
+                if callee_name not in seen:
+                    seen.add(callee_name)
+                    callee_entry = callee.getEntryPoint()
+                    callees.append({
+                        "name": callee_name,
+                        "offset": callee_entry.getOffset() if callee_entry else 0,
+                    })
 
         return callees
 
@@ -564,18 +560,39 @@ class GhidraAnalyzer:
         # Get references TO this function's entry point
         refs_to = ref_manager.getReferencesTo(func_entry)
         for ref in refs_to:
-            if ref.getReferenceType().isCall():
+            # Some bindings may yield Address objects; handle both Reference and Address.
+            if hasattr(ref, "getReferenceType"):
+                if not ref.getReferenceType().isCall():
+                    continue
                 from_addr = ref.getFromAddress()
-                caller = func_manager.getFunctionContaining(from_addr)
-                if caller:
-                    caller_name = caller.getName()
-                    if caller_name not in seen:
-                        seen.add(caller_name)
-                        caller_entry = caller.getEntryPoint()
-                        callers.append({
-                            "name": caller_name,
-                            "offset": caller_entry.getOffset() if caller_entry else 0,
-                        })
+            else:
+                from_addr = ref
+                found = False
+                try:
+                    refs_from = ref_manager.getReferencesFrom(from_addr)
+                except Exception:
+                    refs_from = []
+                for ref_from in refs_from:
+                    try:
+                        if ref_from.getReferenceType().isCall() and ref_from.getToAddress() == func_entry:
+                            from_addr = ref_from.getFromAddress()
+                            found = True
+                            break
+                    except Exception:
+                        continue
+                if not found:
+                    continue
+
+            caller = func_manager.getFunctionContaining(from_addr)
+            if caller:
+                caller_name = caller.getName()
+                if caller_name not in seen:
+                    seen.add(caller_name)
+                    caller_entry = caller.getEntryPoint()
+                    callers.append({
+                        "name": caller_name,
+                        "offset": caller_entry.getOffset() if caller_entry else 0,
+                    })
 
         return callers
     
@@ -601,12 +618,44 @@ class GhidraAnalyzer:
             if func:
                 return func
 
-        # Try to find by name
+        # Try to find by name (case-insensitive fallback)
         for func in self._iter_functions(func_manager):
-            if func.getName() == address_or_name:
+            func_name = func.getName()
+            if func_name == address_or_name:
+                return func
+            if func_name and func_name.lower() == str(address_or_name).lower():
                 return func
         
         return None
+
+    def _iter_call_references_from_body(self, body: Any, ref_manager: Any):
+        """Yield call-type references originating from a function body.
+
+        Note: ReferenceManager.getReferenceSourceIterator may yield Address objects,
+        so we must resolve References via getReferencesFrom(address).
+        """
+        if not body:
+            return []
+
+        try:
+            ref_iter = ref_manager.getReferenceSourceIterator(body, True)
+        except Exception:
+            return []
+
+        def _generator():
+            for from_addr in ref_iter:
+                try:
+                    refs_from = ref_manager.getReferencesFrom(from_addr)
+                except Exception:
+                    continue
+                for ref in refs_from:
+                    try:
+                        if ref.getReferenceType().isCall():
+                            yield ref
+                    except Exception:
+                        continue
+
+        return _generator()
     
     def close(self):
         """
@@ -680,6 +729,10 @@ class GhidraAnalyzer:
         try:
             if address_or_name.startswith("0x"):
                 return int(address_or_name, 16)
+            if address_or_name.startswith("FUN_"):
+                return int(address_or_name[4:], 16)
+            if address_or_name.startswith("thunk_FUN_"):
+                return int(address_or_name[10:], 16)
             if address_or_name.startswith("fcn."):
                 # Rizin-style auto-named function (fcn.00401000)
                 return int(address_or_name[4:], 16)

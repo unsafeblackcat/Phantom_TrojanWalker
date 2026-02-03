@@ -23,6 +23,7 @@ FunctionAnalysisAgent:
     temperature: 0
     api_key: "YOUR_API_KEY_HERE"
     base_url: "https://api.deepseek.com/chat/completions"
+    extra_body: {}
     max_retries: 3
     timeout: 120
     max_completion_tokens: 32768
@@ -41,6 +42,7 @@ MalwareAnalysisAgent:
     temperature: 0
     api_key: "YOUR_API_KEY_HERE"
     base_url: "https://api.deepseek.com/chat/completions"
+    extra_body: {}
     max_retries: 3
     timeout: 120
     max_completion_tokens: 32768

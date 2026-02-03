@@ -74,9 +74,11 @@ def _build_llm_params(agent_name: str, agent_cfg: Any, rate_limiter: Optional[In
         "max_retries": agent_cfg.llm.max_retries,
         "timeout": agent_cfg.llm.timeout,
         "max_completion_tokens": agent_cfg.llm.max_completion_tokens,
-        "extra_body": agent_cfg.llm.extra_body,
         "rate_limiter": rate_limiter,
-        "model_kwargs": {"response_format": {"type": "json_object"}},
+        "model_kwargs": {
+            "response_format": {"type": "json_object"},
+            "extra_body": agent_cfg.llm.extra_body
+        },
     }
     # 过滤掉为 None 的参数，确保空值时使用 LangChain 或 Provider 的默认值
     return {k: v for k, v in params.items() if v is not None}

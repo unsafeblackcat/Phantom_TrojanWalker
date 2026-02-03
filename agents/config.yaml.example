@@ -1,5 +1,5 @@
 plugins:
-  rizin:
+  ghidra:
     base_url: "http://localhost:8000"
     endpoints:
       health_check: "/health_check"
@@ -10,6 +10,9 @@ plugins:
       strings: "/strings"
       callgraph: "/callgraph"
       decompile: "/decompile"
+      decompile_batch: "/decompile_batch"
+      xrefs: "/xrefs"
+      xrefs_batch: "/xrefs_batch"
 
 FunctionAnalysisAgent:
   system_prompt: ""

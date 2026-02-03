@@ -1,7 +1,8 @@
-import yaml
 import os
-from pydantic import BaseModel, Field
 from typing import Dict, Optional
+
+import yaml
+from pydantic import BaseModel
 
 class LLMConfig(BaseModel):
     model_name: str
@@ -34,28 +35,74 @@ class AppConfig(BaseModel):
     FunctionAnalysisAgent: AgentConfig
     MalwareAnalysisAgent: AgentConfig
 
-def load_config(config_path: str = None) -> AppConfig:
-    if config_path is None:
-        # 默认查找与当前文件同目录下的 config.yaml
-        config_path = os.path.join(os.path.dirname(__file__), "config.yaml")
-        
+def load_config(config_path: str | None = None) -> AppConfig:
+    resolved_path = _resolve_config_path(config_path)
+    config = _load_yaml_config(resolved_path)
+    _apply_env_overrides(config)
+    _load_agent_prompts(config, resolved_path)
+    return config
+
+
+def _resolve_config_path(config_path: Optional[str]) -> str:
+    """Resolve config path with a sensible default.
+
+    Refactor note: isolate path resolution for readability and testability.
+    """
+    if config_path:
+        return config_path
+    # 默认查找与当前文件同目录下的 config.yaml
+    return os.path.join(os.path.dirname(__file__), "config.yaml")
+
+
+def _load_yaml_config(config_path: str) -> AppConfig:
+    """Load YAML config file into AppConfig.
+
+    Refactor note: keep I/O isolated for clearer error surface.
+    """
     with open(config_path, "r", encoding="utf-8") as f:
-        config = AppConfig(**yaml.safe_load(f))
-    
-    # 加载各个 Agent 的系统提示词
+        data = yaml.safe_load(f)
+    return AppConfig(**data)
+
+
+def _apply_env_overrides(config: AppConfig) -> None:
+    """Apply environment variable overrides.
+
+    Refactor note: use a guard clause to reduce nesting.
+    """
+    ghidra_base_url = os.getenv("PTW_GHIDRA_BASE_URL")
+    if not ghidra_base_url:
+        return
+
+    # Pydantic models are mutable by default.
+    if "ghidra" in config.plugins:
+        config.plugins["ghidra"].base_url = ghidra_base_url
+
+
+def _load_agent_prompts(config: AppConfig, config_path: str) -> None:
+    """Load system prompts for agents from their configured paths.
+
+    Refactor note: centralize prompt loading and path normalization.
+    """
+    config_dir = os.path.dirname(config_path)
     for agent_name in ["FunctionAnalysisAgent", "MalwareAnalysisAgent"]:
         agent_config = getattr(config, agent_name)
-        if agent_config.system_prompt_path:
-            prompt_path = agent_config.system_prompt_path
-            # 如果是相对路径，则相对于配置文件所在目录
-            if not os.path.isabs(prompt_path):
-                prompt_path = os.path.join(os.path.dirname(config_path), prompt_path)
-            
-            if os.path.exists(prompt_path):
-                with open(prompt_path, "r", encoding="utf-8") as f:
-                    agent_config.system_prompt = f.read()
-                
-    return config
+        prompt_path = agent_config.system_prompt_path
+        if not prompt_path:
+            continue  # Guard clause to simplify flow
+
+        resolved_prompt_path = _resolve_prompt_path(prompt_path, config_dir)
+        if not os.path.exists(resolved_prompt_path):
+            continue
+
+        with open(resolved_prompt_path, "r", encoding="utf-8") as f:
+            agent_config.system_prompt = f.read()
+
+
+def _resolve_prompt_path(prompt_path: str, config_dir: str) -> str:
+    """Resolve prompt path relative to config directory if needed."""
+    if os.path.isabs(prompt_path):
+        return prompt_path
+    return os.path.join(config_dir, prompt_path)
 
 if __name__ == "__main__":
     config = load_config()

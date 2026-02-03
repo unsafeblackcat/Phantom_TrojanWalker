@@ -1,0 +1,54 @@
+# Ghidra Pipe Service Dockerfile
+# Based on blacktop/ghidra with Python + pyghidra added
+FROM blacktop/ghidra:12 AS base
+
+USER root
+
+# Install Python and build dependencies
+# Switch Ubuntu ports mirror to improve availability in some networks
+RUN if [ -f /etc/apt/sources.list ]; then \
+            sed -i 's|http://ports.ubuntu.com/ubuntu-ports|https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports|g' /etc/apt/sources.list; \
+        fi \
+        && if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then \
+            sed -i 's|http://ports.ubuntu.com/ubuntu-ports|https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports|g' /etc/apt/sources.list.d/ubuntu.sources; \
+        fi \
+        && apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-venv \
+    python3-dev \
+    gcc \
+    g++ \
+    make \
+    libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create app directory
+WORKDIR /app
+
+# Create and activate virtual environment
+RUN python3 -m venv /app/venv
+ENV PATH="/app/venv/bin:$PATH"
+ENV VIRTUAL_ENV="/app/venv"
+
+# Set Ghidra installation directory for pyghidra
+ENV GHIDRA_INSTALL_DIR=/ghidra
+
+# Install Python dependencies
+COPY requirements-ghidra.txt /app/
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements-ghidra.txt
+
+# Copy application code ensuring correct directory structure for path calculations
+COPY module /app/module
+
+# Create data directories
+RUN mkdir -p /app/data/uploads /app/data/projects
+
+# Expose port
+EXPOSE 8000
+
+# Run the FastAPI service
+# We run from /app so that ROOT_DIR calculation in main.py works correctly
+# (ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(abspath))))
+CMD ["python", "module/ghidra_pipe/main.py"]

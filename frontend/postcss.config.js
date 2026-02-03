@@ -1,6 +1,9 @@
+// Refactor: keep plugin map in a named constant for clarity.
+const postcssPlugins = {
+  tailwindcss: {},
+  autoprefixer: {},
+}
+
 export default {
-  plugins: {
-    tailwindcss: {},
-    autoprefixer: {},
-  },
+  plugins: postcssPlugins,
 }

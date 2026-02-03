@@ -11,19 +11,20 @@ services:
     volumes:
       - ./data:/app/data
       - ./agents/config.yaml:/app/agents/config.yaml:ro
+    environment:
+      - PTW_GHIDRA_BASE_URL=http://ph_ghidra:8000
 
-  ph_rzpipe:
+  ph_ghidra:
     build:
       context: .
-      dockerfile: docker/Dockerfile.rzpipe
-    container_name: ph_rzpipe
-    user: "0:0"
+      dockerfile: docker/Dockerfile.ghidra
+    container_name: ph_ghidra
     ports:
       - "127.0.0.1:8000:8000"
     volumes:
       - ./data:/app/data
     environment:
-      - PTW_BACKEND_BASE_URL=http://ph_backend:8001
+      - GHIDRA_INSTALL_DIR=/ghidra
     depends_on:
       - ph_backend
 
@@ -41,3 +42,4 @@ services:
       - PTW_BACKEND_BASE_URL=http://ph_backend:8001
     depends_on:
       - ph_backend
+

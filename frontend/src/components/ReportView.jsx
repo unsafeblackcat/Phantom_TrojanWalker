@@ -1,14 +1,48 @@
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
+
+// Refactor: keep repetitive list normalization in one place.
+const normalizeList = (items) => (Array.isArray(items) ? items.filter(Boolean) : []);
+
+// Refactor: centralize badge styling to simplify JSX conditions.
+const getRiskBadgeClass = (riskLevel) => {
+  if (riskLevel === 'critical' || riskLevel === 'high') return 'bg-red-900 text-red-100';
+  if (riskLevel === 'medium' || riskLevel === 'low') return 'bg-orange-700 text-orange-100';
+  if (riskLevel === 'safe') return 'bg-green-900 text-green-100';
+  return 'bg-slate-700 text-slate-200';
+};
+
+const getSeverityBadgeClass = (severity) => {
+  if (severity === 'critical') return 'bg-red-800 text-red-100';
+  if (severity === 'high') return 'bg-orange-800 text-orange-100';
+  if (severity === 'medium') return 'bg-yellow-800 text-yellow-100';
+  return 'bg-slate-700 text-slate-200';
+};
+
+const hasAnyIocs = (iocs) => {
+  if (!iocs) return false;
+  return [
+    iocs.domains,
+    iocs.ips,
+    iocs.urls,
+    iocs.file_paths,
+    iocs.registry_keys,
+    iocs.mutexes,
+    iocs.process_names,
+    iocs.service_names,
+  ].some((items) => Array.isArray(items) && items.length > 0);
+};
 
 const ReportView = ({ report }) => {
-  if (!report) return null;
-
   const [maliciousOpen, setMaliciousOpen] = useState(false);
   const [ttpsOpen, setTtpsOpen] = useState(false);
   const [iocsOpen, setIocsOpen] = useState(false);
+
+  // Refactor: keep hooks unconditional to satisfy React rules.
+  if (!report) return null;
+
+  const metadata = report.metadata;
+  const malwareReport = report.malware_report;
 
   const renderChevronButton = (open, onClick, expandedLabel, collapsedLabel) => (
     <button
@@ -29,7 +63,7 @@ const ReportView = ({ report }) => {
   );
 
   const renderIocGroup = (title, items) => {
-    const safeItems = Array.isArray(items) ? items.filter(Boolean) : [];
+    const safeItems = normalizeList(items);
     if (safeItems.length === 0) return null;
     return (
       <div className="bg-slate-800 p-3 rounded border border-slate-700">
@@ -53,7 +87,7 @@ const ReportView = ({ report }) => {
       {/* 1. Basic Information */}
       <div className="bg-slate-800 p-6 rounded-lg shadow-lg border border-slate-700">
         <h2 className="text-2xl font-bold mb-4 text-emerald-400">File Basic Info</h2>
-        {report.metadata && report.metadata.bin ? (
+        {metadata && metadata.bin ? (
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 text-sm">
              <div className="bg-slate-700 p-3 rounded col-span-2">
                <span className="block text-slate-400 text-xs">Filename</span>
@@ -61,31 +95,31 @@ const ReportView = ({ report }) => {
              </div>
              <div className="bg-slate-700 p-3 rounded">
                <span className="block text-slate-400 text-xs">Architecture</span>
-               <span className="font-mono text-cyan-300">{report.metadata.bin.arch || 'N/A'}</span>
+               <span className="font-mono text-cyan-300">{metadata.bin.arch || 'N/A'}</span>
              </div>
              <div className="bg-slate-700 p-3 rounded">
                <span className="block text-slate-400 text-xs">Bits</span>
-               <span className="font-mono text-purple-300">{report.metadata.bin.bits || 'N/A'}</span>
+               <span className="font-mono text-purple-300">{metadata.bin.bits || 'N/A'}</span>
              </div>
              <div className="bg-slate-700 p-3 rounded">
                <span className="block text-slate-400 text-xs">Subsystem</span>
-               <span className="font-mono text-yellow-300">{report.metadata.bin.subsys || 'N/A'}</span>
+               <span className="font-mono text-yellow-300">{metadata.bin.subsys || 'N/A'}</span>
              </div>
              <div className="bg-slate-700 p-3 rounded">
                <span className="block text-slate-400 text-xs">Signed</span>
-               <span className="font-mono text-blue-300">{report.metadata.bin.signed ? 'Yes' : 'No'}</span>
+               <span className="font-mono text-blue-300">{metadata.bin.signed ? 'Yes' : 'No'}</span>
              </div>
              <div className="bg-slate-700 p-3 rounded">
                <span className="block text-slate-400 text-xs">Compiled At</span>
-               <span className="font-mono text-slate-200">{report.metadata.bin.compiled || 'N/A'}</span>
+               <span className="font-mono text-slate-200">{metadata.bin.compiled || 'N/A'}</span>
              </div>
              <div className="bg-slate-700 p-3 rounded">
                <span className="block text-slate-400 text-xs">Size</span>
-               <span className="font-mono text-slate-200">{report.metadata.core?.humansz || report.metadata.core?.size}</span>
+               <span className="font-mono text-slate-200">{metadata.core?.humansz || metadata.core?.size}</span>
              </div>
              <div className="bg-slate-700 p-3 rounded col-span-2 lg:col-span-4">
                <span className="block text-slate-400 text-xs">SHA256</span>
-               <span className="font-mono text-slate-200 break-all text-[10px] sm:text-xs">{report.sha256 || report.metadata.core?.sha256 || 'N/A'}</span>
+               <span className="font-mono text-slate-200 break-all text-[10px] sm:text-xs">{report.sha256 || metadata.core?.sha256 || 'N/A'}</span>
              </div>
           </div>
         ) : (
@@ -96,50 +130,42 @@ const ReportView = ({ report }) => {
       {/* 2. Analysis Summary (Malware Report) */}
       <div className="bg-slate-800 p-6 rounded-lg shadow-lg border border-slate-700">
         <h2 className="text-2xl font-bold mb-4 text-emerald-400">Analysis Summary</h2>
-        {report.malware_report ? (
+        {malwareReport ? (
            <div className="space-y-4">
                <div className="flex space-x-4 mb-4">
-                 <span className={`px-3 py-1 rounded text-sm font-bold uppercase ${
-                   report.malware_report.risk_level === 'critical' || report.malware_report.risk_level === 'high' 
-                   ? 'bg-red-900 text-red-100' 
-                   : report.malware_report.risk_level === 'medium' || report.malware_report.risk_level === 'low'
-                   ? 'bg-orange-700 text-orange-100'
-                   : report.malware_report.risk_level === 'safe'
-                   ? 'bg-green-900 text-green-100'
-                   : 'bg-slate-700 text-slate-200'
-                 }`}>
-                   Risk: {report.malware_report.risk_level}
+                 <span className={`px-3 py-1 rounded text-sm font-bold uppercase ${getRiskBadgeClass(malwareReport.risk_level)}`}>
+                   Risk: {malwareReport.risk_level}
                  </span>
                  <span className="px-3 py-1 rounded text-sm font-bold bg-slate-700 text-slate-200">
-                   Type: {report.malware_report.threat_type}
+                   Type: {malwareReport.threat_type}
                  </span>
                </div>
                
                <div className="bg-slate-700/50 p-4 rounded border-l-4 border-cyan-500 mb-4">
                  <h3 className="font-bold text-lg text-white mb-1">Variant Identity</h3>
-                 <p className="font-mono text-cyan-300">{report.malware_report.malware_name}</p>
+                 <p className="font-mono text-cyan-300">{malwareReport.malware_name}</p>
                </div>
                
                <div className="bg-slate-700/50 p-4 rounded border-l-4 border-blue-500 mb-4">
                   <h3 className="font-bold text-lg text-white mb-1">Attack Chain Analysis</h3>
-                  <p className="text-slate-300 leading-relaxed">{report.malware_report.attack_chain}</p>
+                  <p className="text-slate-300 leading-relaxed">{malwareReport.attack_chain}</p>
                </div>
                
                <div className="bg-slate-700/50 p-4 rounded border-l-4 border-indigo-500 mb-4">
                   <h3 className="font-bold text-lg text-white mb-1">Detailed Reason</h3>
                   <div className="prose prose-invert prose-sm max-w-none">
-                    <ReactMarkdown>{report.malware_report.reason}</ReactMarkdown>
+                    <ReactMarkdown>{malwareReport.reason}</ReactMarkdown>
                   </div>
                </div>
 
                {/* 2.1 Key TTPs (ATT&CK) */}
-               {Array.isArray(report.malware_report.key_ttps) && report.malware_report.key_ttps.length > 0 && (
+               {Array.isArray(malwareReport.key_ttps) && malwareReport.key_ttps.length > 0 && (
                  <div className="bg-slate-700/50 p-4 rounded border-l-4 border-fuchsia-500">
                    <div className="flex items-center justify-between mb-3">
                      <div className="flex items-center gap-2">
                        <h3 className="font-bold text-lg text-white">Key TTPs (ATT&CK)</h3>
                        <span className="text-xs text-slate-300 bg-slate-800/60 border border-slate-700 px-2 py-0.5 rounded">
-                         {report.malware_report.key_ttps.length}
+                         {malwareReport.key_ttps.length}
                        </span>
                      </div>
                      {renderChevronButton(
@@ -152,10 +178,10 @@ const ReportView = ({ report }) => {
 
                    {ttpsOpen && (
                      <div className="space-y-3">
-                       {report.malware_report.key_ttps.map((ttp, idx) => {
+                       {malwareReport.key_ttps.map((ttp, idx) => {
                          const techniqueId = ttp?.technique_id || '';
                          const techniqueName = ttp?.technique_name || 'Unknown technique';
-                         const tactics = Array.isArray(ttp?.tactics) ? ttp.tactics.filter(Boolean) : [];
+                         const tactics = normalizeList(ttp?.tactics);
                          const evidenceRefs = Array.isArray(ttp?.evidence_refs) ? ttp.evidence_refs : [];
 
                          return (
@@ -213,7 +239,7 @@ const ReportView = ({ report }) => {
                )}
 
                {/* 2.2 Extracted IOCs */}
-               {report.malware_report.extracted_iocs && (
+               {malwareReport.extracted_iocs && (
                  <div className="bg-slate-700/50 p-4 rounded border-l-4 border-sky-500">
                    <div className="flex items-center justify-between mb-3">
                      <div className="flex items-center gap-2">
@@ -229,22 +255,15 @@ const ReportView = ({ report }) => {
 
                    {iocsOpen && (
                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                       {renderIocGroup('Domains', report.malware_report.extracted_iocs.domains)}
-                       {renderIocGroup('IPs', report.malware_report.extracted_iocs.ips)}
-                       {renderIocGroup('URLs', report.malware_report.extracted_iocs.urls)}
-                       {renderIocGroup('File Paths', report.malware_report.extracted_iocs.file_paths)}
-                       {renderIocGroup('Registry Keys', report.malware_report.extracted_iocs.registry_keys)}
-                       {renderIocGroup('Mutexes', report.malware_report.extracted_iocs.mutexes)}
-                       {renderIocGroup('Process Names', report.malware_report.extracted_iocs.process_names)}
-                       {renderIocGroup('Service Names', report.malware_report.extracted_iocs.service_names)}
-                       {(!report.malware_report.extracted_iocs.domains?.length &&
-                         !report.malware_report.extracted_iocs.ips?.length &&
-                         !report.malware_report.extracted_iocs.urls?.length &&
-                         !report.malware_report.extracted_iocs.file_paths?.length &&
-                         !report.malware_report.extracted_iocs.registry_keys?.length &&
-                         !report.malware_report.extracted_iocs.mutexes?.length &&
-                         !report.malware_report.extracted_iocs.process_names?.length &&
-                         !report.malware_report.extracted_iocs.service_names?.length) && (
+                       {renderIocGroup('Domains', malwareReport.extracted_iocs.domains)}
+                       {renderIocGroup('IPs', malwareReport.extracted_iocs.ips)}
+                       {renderIocGroup('URLs', malwareReport.extracted_iocs.urls)}
+                       {renderIocGroup('File Paths', malwareReport.extracted_iocs.file_paths)}
+                       {renderIocGroup('Registry Keys', malwareReport.extracted_iocs.registry_keys)}
+                       {renderIocGroup('Mutexes', malwareReport.extracted_iocs.mutexes)}
+                       {renderIocGroup('Process Names', malwareReport.extracted_iocs.process_names)}
+                       {renderIocGroup('Service Names', malwareReport.extracted_iocs.service_names)}
+                       {!hasAnyIocs(malwareReport.extracted_iocs) && (
                          <div className="lg:col-span-2 text-slate-400 text-sm italic">
                            No IOCs extracted.
                          </div>
@@ -254,7 +273,7 @@ const ReportView = ({ report }) => {
                  </div>
                )}
 
-               {report.malware_report.malicious_functions && report.malware_report.malicious_functions.length > 0 && (
+               {malwareReport.malicious_functions && malwareReport.malicious_functions.length > 0 && (
                  <div className="bg-slate-700/50 p-4 rounded border-l-4 border-rose-500">
                    <div className="flex items-center justify-between mb-3">
                      <h3 className="font-bold text-lg text-white">Malicious Functions</h3>
@@ -268,16 +287,14 @@ const ReportView = ({ report }) => {
 
                    {maliciousOpen && (
                      <div className="space-y-3">
-                       {report.malware_report.malicious_functions.map((fn) => (
+                       {malwareReport.malicious_functions.map((fn) => (
                          <div key={fn.name} className="bg-slate-800 p-3 rounded border border-slate-700 flex items-start justify-between">
                            <div className="min-w-0">
                              <div className="text-sm text-slate-400">{fn.name}</div>
                              <div className="text-sm text-slate-200 mt-1">{fn.reason}</div>
                            </div>
                            <div className="ml-4 flex-shrink-0">
-                             <span className={`px-3 py-1 rounded text-xs font-bold uppercase ${
-                               fn.severity === 'critical' ? 'bg-red-800 text-red-100' : fn.severity === 'high' ? 'bg-orange-800 text-orange-100' : fn.severity === 'medium' ? 'bg-yellow-800 text-yellow-100' : 'bg-slate-700 text-slate-200'
-                             }`}>
+                             <span className={`px-3 py-1 rounded text-xs font-bold uppercase ${getSeverityBadgeClass(fn.severity)}`}>
                                {fn.severity}
                              </span>
                            </div>

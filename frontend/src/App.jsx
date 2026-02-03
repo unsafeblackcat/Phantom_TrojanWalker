@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import axios from 'axios';
-import { Upload, Search, Loader2, FileWarning, CheckCircle, AlertCircle } from 'lucide-react';
+import { AlertCircle, Loader2, Search, Upload } from 'lucide-react';
 import ReportView from './components/ReportView';
 
 // IMPORTANT: To ensure the browser never talks to backend directly,
@@ -8,6 +8,15 @@ import ReportView from './components/ReportView';
 // In dev, Vite's proxy handles forwarding. In production, the frontend container
 // runs a small Node gateway that proxies /api/* to the backend.
 const API_BASE = "/api";
+const STATUS = {
+  idle: "idle",
+  uploading: "uploading",
+  pending: "pending",
+  processing: "processing",
+  completed: "completed",
+  failed: "failed",
+};
+const POLL_INTERVAL_MS = 2000;
 
 async function sha256HexFromFile(file) {
   if (!globalThis.crypto?.subtle) {
@@ -19,39 +28,67 @@ async function sha256HexFromFile(file) {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+// Refactor: keep form-data creation in one place for clarity.
+function buildUploadFormData(selectedFile, sha256) {
+  const formData = new FormData();
+  formData.append("file", selectedFile);
+  if (sha256) {
+    formData.append('sha256', sha256);
+  }
+  return formData;
+}
+
+// Refactor: centralize in-flight state checks to avoid repeated conditions.
+function isInProgress(status) {
+  return status === STATUS.pending || status === STATUS.processing;
+}
+
 function App() {
-  const [file, setFile] = useState(null);
-  const [taskId, setTaskId] = useState(null);
-  const [status, setStatus] = useState("idle"); // idle, uploading, pending, processing, completed, failed
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [activeTaskId, setActiveTaskId] = useState(null);
+  const [status, setStatus] = useState(STATUS.idle); // idle, uploading, pending, processing, completed, failed
   const [report, setReport] = useState(null);
-  const [error, setError] = useState(null);
+  const [errorMessage, setErrorMessage] = useState(null);
   const [searchHash, setSearchHash] = useState("");
 
-  const handleFileChange = (e) => {
-    if (e.target.files && e.target.files[0]) {
-      setFile(e.target.files[0]);
+  const handleFileChange = (event) => {
+    const nextFile = event.target.files?.[0] || null;
+    setSelectedFile(nextFile);
+  };
+
+  // Refactor: consolidate task state updates to avoid duplication.
+  const applyTaskState = (taskData) => {
+    if (!taskData) return;
+    setActiveTaskId(taskData.task_id);
+    setStatus(taskData.status);
+
+    if (taskData.status === STATUS.completed) {
+      setReport(taskData);
+      return;
+    }
+    if (taskData.status === STATUS.failed) {
+      setErrorMessage(taskData.error || "Analysis failed.");
     }
   };
 
   const uploadFile = async () => {
-    if (!file) return;
-    setStatus("uploading");
+    if (!selectedFile) return;
+    setStatus(STATUS.uploading);
     setReport(null);
-    setError(null);
+    setErrorMessage(null);
 
     let sha256 = null;
     try {
-      sha256 = await sha256HexFromFile(file);
+      sha256 = await sha256HexFromFile(selectedFile);
       // Pre-dedupe: if task exists for this sha256, reuse it and avoid uploading.
       const existing = await axios.get(`${API_BASE}/result/${sha256}`);
-      setTaskId(existing.data.task_id);
-      setStatus(existing.data.status);
-      if (existing.data.status === 'completed') {
-        setReport(existing.data);
-      } else if (existing.data.status === 'failed') {
-        setError(existing.data.error || 'Analysis failed.');
+      const existingStatus = existing?.data?.status;
+      // Only reuse successful or in-flight tasks. If the last attempt failed,
+      // allow the user to re-upload and trigger a fresh analysis.
+      if (existingStatus && existingStatus !== STATUS.failed) {
+        applyTaskState(existing.data);
+        return;
       }
-      return;
     } catch (err) {
       // 404 means no existing task -> proceed to upload.
       // Any other error (e.g. WebCrypto not available) also falls back to upload.
@@ -63,38 +100,29 @@ function App() {
       }
     }
 
-    const formData = new FormData();
-    formData.append("file", file);
-    if (sha256) {
-      formData.append('sha256', sha256);
-    }
+    const formData = buildUploadFormData(selectedFile, sha256);
 
     try {
       const res = await axios.post(`${API_BASE}/analyze`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
-      setTaskId(res.data.task_id);
+      setActiveTaskId(res.data.task_id);
       setStatus(res.data.status); 
       
-      if (res.data.status === 'completed') {
+      if (res.data.status === STATUS.completed) {
         fetchStatus(res.data.task_id);
       }
     } catch (err) {
       console.error(err);
-      setError("Upload failed.");
-      setStatus("failed");
+      setErrorMessage("Upload failed.");
+      setStatus(STATUS.failed);
     }
   };
 
-  const fetchStatus = async (tid) => {
+  const fetchStatus = async (taskId) => {
     try {
-      const res = await axios.get(`${API_BASE}/tasks/${tid}`);
-      setStatus(res.data.status);
-      if (res.data.status === "completed") {
-        setReport(res.data);
-      } else if (res.data.status === "failed") {
-        setError(res.data.error || "Analysis failed.");
-      }
+      const res = await axios.get(`${API_BASE}/tasks/${taskId}`);
+      applyTaskState(res.data);
     } catch (err) {
       console.error(err);
     }
@@ -103,29 +131,25 @@ function App() {
   const searchByHash = async () => {
     if (!searchHash) return;
     try {
-      setStatus("processing");
+      setStatus(STATUS.processing);
       const res = await axios.get(`${API_BASE}/result/${searchHash}`);
-      setTaskId(res.data.task_id);
-      setStatus(res.data.status);
-      if (res.data.status === "completed") {
-        setReport(res.data);
-      }
+      applyTaskState(res.data);
     } catch (err) {
-      setError("Analysis not found for this hash.");
-      setStatus("failed");
+      setErrorMessage("Analysis not found for this hash.");
+      setStatus(STATUS.failed);
     }
   };
 
   // Polling
   useEffect(() => {
     let interval;
-    if (taskId && (status === "pending" || status === "processing")) {
+    if (activeTaskId && isInProgress(status)) {
       interval = setInterval(() => {
-        fetchStatus(taskId);
-      }, 2000);
+        fetchStatus(activeTaskId);
+      }, POLL_INTERVAL_MS);
     }
     return () => clearInterval(interval);
-  }, [taskId, status]);
+  }, [activeTaskId, status]);
 
   return (
     <div className="min-h-screen p-8 max-w-7xl mx-auto">
@@ -148,8 +172,8 @@ function App() {
               className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
               onChange={handleFileChange}
             />
-            {file ? (
-              <div className="text-emerald-400 font-semibold">{file.name}</div>
+            {selectedFile ? (
+              <div className="text-emerald-400 font-semibold">{selectedFile.name}</div>
             ) : (
               <div className="text-slate-400">
                 <p>Drag & drop or click to select</p>
@@ -159,10 +183,10 @@ function App() {
           </div>
           <button 
             onClick={uploadFile}
-            disabled={!file || status === 'uploading'}
+            disabled={!selectedFile || status === STATUS.uploading}
             className="mt-4 w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-lg transition-all disabled:opacity-50"
           >
-            {status === 'uploading' ? 'Uploading...' : 'Start Analysis'}
+            {status === STATUS.uploading ? 'Uploading...' : 'Start Analysis'}
           </button>
         </div>
 
@@ -190,9 +214,9 @@ function App() {
       </div>
 
       {/* Status & Results */}
-      {status !== 'idle' && (
+      {status !== STATUS.idle && (
         <div className="animate-in fade-in duration-500">
-           {status === 'pending' || status === 'processing' ? (
+           {isInProgress(status) ? (
              <div className="bg-slate-800 p-8 rounded-xl border border-slate-700 text-center">
                <Loader2 className="animate-spin w-12 h-12 mx-auto text-cyan-400 mb-4" />
                <h3 className="text-2xl font-bold text-white">Analysis in Progress...</h3>
@@ -204,15 +228,15 @@ function App() {
              </div>
            ) : null}
 
-           {status === 'failed' && (
+           {status === STATUS.failed && (
              <div className="bg-red-900/20 p-8 rounded-xl border border-red-800 text-center">
                <AlertCircle className="w-12 h-12 mx-auto text-red-500 mb-4" />
                <h3 className="text-2xl font-bold text-red-400">Analysis Failed</h3>
-               <p className="text-red-200 mt-2">{error}</p>
+               <p className="text-red-200 mt-2">{errorMessage}</p>
              </div>
            )}
 
-           {status === 'completed' && report && (
+           {status === STATUS.completed && report && (
              <ReportView report={report} />
            )}
         </div>

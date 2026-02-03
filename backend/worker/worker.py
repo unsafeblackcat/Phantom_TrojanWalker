@@ -133,9 +133,10 @@ class AnalysisWorker:
 
             task.finished_at = datetime.now()
         except Exception as e:
-            logger.error(f"Analysis failed: {traceback.format_exc()}")
+            tb = traceback.format_exc()
+            logger.error(f"Analysis failed: {tb}")
             task.status = "failed"
-            task.error_message = str(e)
+            task.error_message = f"{e}\n{tb}"
         finally:
             db.commit()
 

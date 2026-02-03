@@ -1,8 +1,9 @@
+import json
 import os
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 class LLMConfig(BaseModel):
     model_name: str
@@ -13,6 +14,25 @@ class LLMConfig(BaseModel):
     timeout: Optional[float] = None
     max_completion_tokens: Optional[int] = None
     max_input_tokens: Optional[int] = None
+    extra_body: Optional[Dict[str, Any]] = None
+
+    @field_validator("extra_body", mode="before")
+    @classmethod
+    def _parse_extra_body(cls, value: Any) -> Any:
+        if value is None or isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return None
+            try:
+                parsed = json.loads(stripped)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"LLM extra_body must be valid JSON: {exc}") from exc
+            if not isinstance(parsed, dict):
+                raise ValueError("LLM extra_body must be a JSON object.")
+            return parsed
+        raise ValueError("LLM extra_body must be a JSON object or JSON string.")
 
 class RateLimitConfig(BaseModel):
     requests_per_second: float = 1.0
@@ -28,7 +48,6 @@ class AgentConfig(BaseModel):
     system_prompt_path: Optional[str] = None
     llm: LLMConfig
     rate_limit: Optional[RateLimitConfig] = None
-    max_concurrency: int = 5
 
 class AppConfig(BaseModel):
     plugins: Dict[str, PluginConfig]

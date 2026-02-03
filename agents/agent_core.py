@@ -66,6 +66,11 @@ def _build_llm_params(agent_name: str, agent_cfg: Any, rate_limiter: Optional[In
 
     Refactor note: centralizes default handling for consistency.
     """
+    # Build model_kwargs, only including extra_body if it's not None
+    model_kwargs = {"response_format": {"type": "json_object"}}
+    if agent_cfg.llm.extra_body is not None:
+        model_kwargs["extra_body"] = agent_cfg.llm.extra_body
+
     params = {
         "name": agent_name,
         "base_url": agent_cfg.llm.base_url,
@@ -75,7 +80,7 @@ def _build_llm_params(agent_name: str, agent_cfg: Any, rate_limiter: Optional[In
         "timeout": agent_cfg.llm.timeout,
         "max_completion_tokens": agent_cfg.llm.max_completion_tokens,
         "rate_limiter": rate_limiter,
-        "model_kwargs": {"response_format": {"type": "json_object"}},
+        "model_kwargs": model_kwargs,
     }
     # 过滤掉为 None 的参数，确保空值时使用 LangChain 或 Provider 的默认值
     return {k: v for k, v in params.items() if v is not None}
@@ -93,6 +98,38 @@ class FunctionAnalysisAgent:
         self.config = load_config()
         self.agent_config = self.config.FunctionAnalysisAgent
         self.llm = _create_llm("FunctionAnalysisAgent", self.agent_config)
+        # Retry attempts for JSON parse failures (fallback if not configured)
+        self._json_retry_attempts = self._resolve_json_retry_attempts()
+
+    async def _ainvoke_with_retry(self, messages: List[Any], agent_label: str) -> Any:
+        """Invoke LLM with retry to handle transient provider/parsing failures.
+
+        Refactor note: centralize retry for provider-side NoneType/parse errors.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(1, self._json_retry_attempts + 1):
+            try:
+                return await self.llm.ainvoke(messages)
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "%s LLM invoke failed (attempt %d/%d): %s",
+                    agent_label,
+                    attempt,
+                    self._json_retry_attempts,
+                    exc,
+                )
+                # Small backoff to avoid tight retry loop
+                await asyncio.sleep(min(0.5 * attempt, 2.0))
+        if last_exc:
+            raise last_exc
+
+    def _resolve_json_retry_attempts(self) -> int:
+        # Prefer configured max_retries; ensure at least 1 attempt.
+        max_retries = getattr(self.agent_config.llm, "max_retries", None)
+        if isinstance(max_retries, int) and max_retries > 0:
+            return max_retries
+        return 3
 
     def _truncate_code_for_context(self, code: str) -> str:
         max_input_tokens = getattr(self.agent_config.llm, "max_input_tokens", None)
@@ -109,16 +146,23 @@ class FunctionAnalysisAgent:
             SystemMessage(content=self.agent_config.system_prompt),
             HumanMessage(content=f"{code}")
         ]
-        response = await self.llm.ainvoke(messages)
-        content = _response_to_text(response)
-        parsed = _json_or_error_payload("FunctionAnalysisAgent", content)
-        # For single-call analyze, keep strict behavior by raising on parse failure.
-        if "error" in parsed:
-            raise LLMResponseError(
-                "Failed to parse JSON response from FunctionAnalysisAgent",
-                raw_response=content,
+        last_content = ""
+        for attempt in range(1, self._json_retry_attempts + 1):
+            response = await self._ainvoke_with_retry(messages, "FunctionAnalysisAgent")
+            content = _response_to_text(response)
+            last_content = content
+            parsed = _json_or_error_payload("FunctionAnalysisAgent", content)
+            if "error" not in parsed:
+                return parsed
+            logger.warning(
+                "FunctionAnalysisAgent JSON parse failed (attempt %d/%d)",
+                attempt,
+                self._json_retry_attempts,
             )
-        return parsed
+        raise LLMResponseError(
+            "Failed to parse JSON response from FunctionAnalysisAgent",
+            raw_response=last_content,
+        )
 
     async def analyze_decompiled_batch(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Batch analyze decompiled functions.
@@ -126,10 +170,9 @@ class FunctionAnalysisAgent:
         Input: [{"name": str, "code": str}, ...]
         Output: [{"name": str, "analysis": dict}, ...]
 
-        Notes:
-        - Uses LangChain batch APIs with max_concurrency.
-        - Per-item JSON parse failures are returned as an "analysis" error payload
-          rather than failing the whole batch.
+                Notes:
+                - Sequentially invokes the LLM per function.
+                - JSON parse failures raise an error to avoid partial results.
         """
         if not items:
             return []
@@ -148,43 +191,36 @@ class FunctionAnalysisAgent:
         if not prepared_names:
             return []
 
-        message_batches = [
-            [
+        async def _analyze_one(name: str, code: str) -> Dict[str, Any]:
+            messages = [
                 SystemMessage(content=self.agent_config.system_prompt),
                 HumanMessage(content=str(code)),
             ]
-            for code in prepared_codes
-        ]
-        config = {"max_concurrency": self.agent_config.max_concurrency}
-
-        try:
-            try:
-                responses = await self.llm.abatch(message_batches, config=config)
-            except AttributeError:
-                responses = self.llm.batch(message_batches, config=config)
-        except Exception as e:
-            # Batch failed (e.g., 504 gateway timeout). Continue by returning
-            # error payloads for each item without aborting the pipeline.
-            logger.warning(
-                "Batch invocation failed, continuing with error payloads: %s",
-                e,
-                exc_info=True,
-            )
-            responses = [{"__error__": str(e)} for _ in message_batches]
-
-        analyses: List[Dict[str, Any]] = []
-        for resp in responses:
-            if isinstance(resp, dict) and "__error__" in resp:
-                parsed = {
-                    "error": f"LLM request failed: {resp['__error__']}",
-                    "agent": "FunctionAnalysisAgent",
-                }
-            else:
-                content = _response_to_text(resp)
+            last_content = ""
+            parsed = None
+            for attempt in range(1, self._json_retry_attempts + 1):
+                response = await self._ainvoke_with_retry(messages, "FunctionAnalysisAgent")
+                content = _response_to_text(response)
+                last_content = content
                 parsed = _json_or_error_payload("FunctionAnalysisAgent", content)
-                if "error" in parsed:
-                    logger.error("Failed to parse JSON from LLM response", exc_info=True)
-            analyses.append(parsed)
+                if "error" not in parsed:
+                    break
+                logger.warning(
+                    "FunctionAnalysisAgent JSON parse failed for %s (attempt %d/%d)",
+                    name,
+                    attempt,
+                    self._json_retry_attempts,
+                )
+            if not parsed or "error" in parsed:
+                raise LLMResponseError(
+                    "Failed to parse JSON response from FunctionAnalysisAgent",
+                    raw_response=last_content,
+                )
+            return parsed
+
+        analyses = await asyncio.gather(
+            *[_analyze_one(name, code) for name, code in zip(prepared_names, prepared_codes)]
+        )
 
         return [
             {"name": name, "analysis": analysis}
@@ -197,6 +233,25 @@ class MalwareAnalysisAgent:
         self.agent_config = self.config.MalwareAnalysisAgent
         self.llm = _create_llm("MalwareAnalysisAgent", self.agent_config)
 
+    async def _ainvoke_with_retry(self, messages: List[Any]) -> Any:
+        """Invoke LLM with retry to handle transient provider/parsing failures."""
+        max_attempts = 3
+        last_exc: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return await self.llm.ainvoke(messages)
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "MalwareAnalysisAgent LLM invoke failed (attempt %d/%d): %s",
+                    attempt,
+                    max_attempts,
+                    exc,
+                )
+                await asyncio.sleep(min(0.5 * attempt, 2.0))
+        if last_exc:
+            raise last_exc
+
     async def analyze(self, analysis_results: list, metadata: dict) -> dict:
         context = {
             "metadata": metadata,
@@ -206,7 +261,7 @@ class MalwareAnalysisAgent:
             SystemMessage(content=self.agent_config.system_prompt),
             HumanMessage(content=f"{json.dumps(context, ensure_ascii=False, indent=2)}")
         ]
-        response = await self.llm.ainvoke(messages)
+        response = await self._ainvoke_with_retry(messages)
         content = _response_to_text(response)
         parsed = _json_or_error_payload("MalwareAnalysisAgent", content)
         if "error" in parsed:
@@ -215,4 +270,3 @@ class MalwareAnalysisAgent:
                 raw_response=content,
             )
         return parsed
-

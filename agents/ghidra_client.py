@@ -99,21 +99,21 @@ class GhidraClient:
     async def trigger_analysis(self):
         """Trigger analysis on the uploaded binary."""
         # Ghidra analysis can take longer than Rizin
-        await self._request("GET", "analyze", timeout=300.0)
+        await self._request("GET", "analyze", timeout=3600.0)
 
     async def get_metadata(self) -> Dict[str, Any]:
         """Get binary metadata."""
-        res = await self._request("GET", "metadata", timeout=20.0)
+        res = await self._request("GET", "metadata", timeout=60.0)
         return self._coerce_dict(res)
 
     async def get_functions(self) -> List[Dict[str, Any]]:
         """Get list of functions."""
-        res = await self._request("GET", "functions", timeout=30.0)
+        res = await self._request("GET", "functions", timeout=60.0)
         return self._coerce_list(res)
 
     async def get_strings(self) -> List[str]:
         """Get strings from the binary."""
-        res = await self._request("GET", "strings", timeout=30.0)
+        res = await self._request("GET", "strings", timeout=60.0)
         string_entries = self._coerce_list(res)
         return [
             s.get("string")
@@ -132,7 +132,7 @@ class GhidraClient:
         Returns list of {address, code} dicts.
         """
         # Batch decompilation can be very time-consuming with Ghidra
-        res = await self._request("POST", "decompile_batch", json=addresses, timeout=900.0)
+        res = await self._request("POST", "decompile_batch", json=addresses, timeout=3600.0)
         return self._coerce_list(res)
 
     async def get_function_xrefs(self, address_or_name: str) -> Optional[Dict[str, Any]]:
@@ -141,7 +141,7 @@ class GhidraClient:
         Returns: {name, offset, callers, callees} or None if not found.
         """
         try:
-            res = await self._request("GET", "xrefs", params={"addr": address_or_name}, timeout=30.0)
+            res = await self._request("GET", "xrefs", params={"addr": address_or_name}, timeout=60.0)
             return self._coerce_dict(res) if res else None
         except Exception:
             return None
@@ -152,7 +152,7 @@ class GhidraClient:
         Input: list of function names or addresses (mixed).
         Returns: list of {name, offset, callers, callees} dicts.
         """
-        res = await self._request("POST", "xrefs_batch", json=addresses, timeout=120.0)
+        res = await self._request("POST", "xrefs_batch", json=addresses, timeout=3600.0)
         return self._coerce_list(res)
 
     def _coerce_dict(self, value: Any) -> Dict[str, Any]:

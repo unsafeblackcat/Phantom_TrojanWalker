@@ -166,8 +166,7 @@ class FunctionAnalysisAgent:
         if not prepared_names:
             return []
 
-        analyses: List[Dict[str, Any]] = []
-        for name, code in zip(prepared_names, prepared_codes):
+        async def _analyze_one(name: str, code: str) -> Dict[str, Any]:
             messages = [
                 SystemMessage(content=self.agent_config.system_prompt),
                 HumanMessage(content=str(code)),
@@ -192,7 +191,11 @@ class FunctionAnalysisAgent:
                     "Failed to parse JSON response from FunctionAnalysisAgent",
                     raw_response=last_content,
                 )
-            analyses.append(parsed)
+            return parsed
+
+        analyses = await asyncio.gather(
+            *[_analyze_one(name, code) for name, code in zip(prepared_names, prepared_codes)]
+        )
 
         return [
             {"name": name, "analysis": analysis}

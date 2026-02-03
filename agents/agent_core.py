@@ -70,7 +70,7 @@ def _build_llm_params(agent_name: str, agent_cfg: Any, rate_limiter: Optional[In
     model_kwargs = {"response_format": {"type": "json_object"}}
     if agent_cfg.llm.extra_body is not None:
         model_kwargs["extra_body"] = agent_cfg.llm.extra_body
-    
+
     params = {
         "name": agent_name,
         "base_url": agent_cfg.llm.base_url,

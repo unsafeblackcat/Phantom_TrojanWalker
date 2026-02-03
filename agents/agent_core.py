@@ -96,6 +96,15 @@ class FunctionAnalysisAgent:
         self.config = load_config()
         self.agent_config = self.config.FunctionAnalysisAgent
         self.llm = _create_llm("FunctionAnalysisAgent", self.agent_config)
+        # Retry attempts for JSON parse failures (fallback if not configured)
+        self._json_retry_attempts = self._resolve_json_retry_attempts()
+
+    def _resolve_json_retry_attempts(self) -> int:
+        # Prefer configured max_retries; ensure at least 1 attempt.
+        max_retries = getattr(self.agent_config.llm, "max_retries", None)
+        if isinstance(max_retries, int) and max_retries > 0:
+            return max_retries
+        return 3
 
     def _truncate_code_for_context(self, code: str) -> str:
         max_input_tokens = getattr(self.agent_config.llm, "max_input_tokens", None)
@@ -112,16 +121,23 @@ class FunctionAnalysisAgent:
             SystemMessage(content=self.agent_config.system_prompt),
             HumanMessage(content=f"{code}")
         ]
-        response = await self.llm.ainvoke(messages)
-        content = _response_to_text(response)
-        parsed = _json_or_error_payload("FunctionAnalysisAgent", content)
-        # For single-call analyze, keep strict behavior by raising on parse failure.
-        if "error" in parsed:
-            raise LLMResponseError(
-                "Failed to parse JSON response from FunctionAnalysisAgent",
-                raw_response=content,
+        last_content = ""
+        for attempt in range(1, self._json_retry_attempts + 1):
+            response = await self.llm.ainvoke(messages)
+            content = _response_to_text(response)
+            last_content = content
+            parsed = _json_or_error_payload("FunctionAnalysisAgent", content)
+            if "error" not in parsed:
+                return parsed
+            logger.warning(
+                "FunctionAnalysisAgent JSON parse failed (attempt %d/%d)",
+                attempt,
+                self._json_retry_attempts,
             )
-        return parsed
+        raise LLMResponseError(
+            "Failed to parse JSON response from FunctionAnalysisAgent",
+            raw_response=last_content,
+        )
 
     async def analyze_decompiled_batch(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Batch analyze decompiled functions.
@@ -156,13 +172,25 @@ class FunctionAnalysisAgent:
                 SystemMessage(content=self.agent_config.system_prompt),
                 HumanMessage(content=str(code)),
             ]
-            response = await self.llm.ainvoke(messages)
-            content = _response_to_text(response)
-            parsed = _json_or_error_payload("FunctionAnalysisAgent", content)
-            if "error" in parsed:
+            last_content = ""
+            parsed = None
+            for attempt in range(1, self._json_retry_attempts + 1):
+                response = await self.llm.ainvoke(messages)
+                content = _response_to_text(response)
+                last_content = content
+                parsed = _json_or_error_payload("FunctionAnalysisAgent", content)
+                if "error" not in parsed:
+                    break
+                logger.warning(
+                    "FunctionAnalysisAgent JSON parse failed for %s (attempt %d/%d)",
+                    name,
+                    attempt,
+                    self._json_retry_attempts,
+                )
+            if not parsed or "error" in parsed:
                 raise LLMResponseError(
                     "Failed to parse JSON response from FunctionAnalysisAgent",
-                    raw_response=content,
+                    raw_response=last_content,
                 )
             analyses.append(parsed)
 

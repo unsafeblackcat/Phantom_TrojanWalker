@@ -32,7 +32,7 @@ class LLMConfig(BaseModel):
             if not isinstance(parsed, dict):
                 raise ValueError("LLM extra_body must be a JSON object.")
             return parsed
-        return value
+        raise ValueError("LLM extra_body must be a JSON object or JSON string.")
 
 class RateLimitConfig(BaseModel):
     requests_per_second: float = 1.0

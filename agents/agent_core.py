@@ -129,10 +129,9 @@ class FunctionAnalysisAgent:
         Input: [{"name": str, "code": str}, ...]
         Output: [{"name": str, "analysis": dict}, ...]
 
-        Notes:
-        - Uses LangChain batch APIs with max_concurrency.
-        - Per-item JSON parse failures are returned as an "analysis" error payload
-          rather than failing the whole batch.
+                Notes:
+                - Sequentially invokes the LLM per function.
+                - JSON parse failures raise an error to avoid partial results.
         """
         if not items:
             return []
@@ -151,42 +150,20 @@ class FunctionAnalysisAgent:
         if not prepared_names:
             return []
 
-        message_batches = [
-            [
+        analyses: List[Dict[str, Any]] = []
+        for name, code in zip(prepared_names, prepared_codes):
+            messages = [
                 SystemMessage(content=self.agent_config.system_prompt),
                 HumanMessage(content=str(code)),
             ]
-            for code in prepared_codes
-        ]
-        config = {"max_concurrency": self.agent_config.max_concurrency}
-
-        try:
-            try:
-                responses = await self.llm.abatch(message_batches, config=config)
-            except AttributeError:
-                responses = self.llm.batch(message_batches, config=config)
-        except Exception as e:
-            # Batch failed (e.g., 504 gateway timeout). Continue by returning
-            # error payloads for each item without aborting the pipeline.
-            logger.warning(
-                "Batch invocation failed, continuing with error payloads: %s",
-                e,
-                exc_info=True,
-            )
-            responses = [{"__error__": str(e)} for _ in message_batches]
-
-        analyses: List[Dict[str, Any]] = []
-        for resp in responses:
-            if isinstance(resp, dict) and "__error__" in resp:
-                parsed = {
-                    "error": f"LLM request failed: {resp['__error__']}",
-                    "agent": "FunctionAnalysisAgent",
-                }
-            else:
-                content = _response_to_text(resp)
-                parsed = _json_or_error_payload("FunctionAnalysisAgent", content)
-                if "error" in parsed:
-                    logger.error("Failed to parse JSON from LLM response", exc_info=True)
+            response = await self.llm.ainvoke(messages)
+            content = _response_to_text(response)
+            parsed = _json_or_error_payload("FunctionAnalysisAgent", content)
+            if "error" in parsed:
+                raise LLMResponseError(
+                    "Failed to parse JSON response from FunctionAnalysisAgent",
+                    raw_response=content,
+                )
             analyses.append(parsed)
 
         return [

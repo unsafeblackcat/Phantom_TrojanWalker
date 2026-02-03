@@ -22,7 +22,7 @@
 - 结果落库是"分列"：`metadata_info/functions/strings/decompiled_code/function_analyses/malware_report` 写入 `AnalysisTask`，不要改成一个大 blob（见 [backend/worker/worker.py](../backend/worker/worker.py)）。
 
 ## AI 分析策略（别当成 bug）
-- 函数级分析只跑 `FUN_*` 自动命名函数 + 常见入口点（main/WinMain/DllMain 等），并发由 `max_concurrency` 控制；反编译过长会按 `max_input_tokens` 做截断（[agents/analysis_coordinator.py](../agents/analysis_coordinator.py)）。
+- 函数级分析只跑 `FUN_*` 自动命名函数 + 常见入口点（main/WinMain/DllMain 等）；反编译过长会按 `max_input_tokens` 做截断（[agents/analysis_coordinator.py](../agents/analysis_coordinator.py)）。
 - 最终报告只喂 "ATT&CK 有匹配（attack_matches 非空）" 的重点函数，减少噪音（同上）。
 
 ## 配置注意

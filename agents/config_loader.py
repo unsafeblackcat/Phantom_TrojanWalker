@@ -48,7 +48,6 @@ class AgentConfig(BaseModel):
     system_prompt_path: Optional[str] = None
     llm: LLMConfig
     rate_limit: Optional[RateLimitConfig] = None
-    max_concurrency: int = 5
 
 class AppConfig(BaseModel):
     plugins: Dict[str, PluginConfig]

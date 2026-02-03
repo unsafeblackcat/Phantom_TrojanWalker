@@ -115,7 +115,7 @@
 - `MalwareAnalysisAgent.analyze()`：解析失败会抛 `LLMResponseError`。
 
 ### 5.2 并发与截断
-- 批量并发：`FunctionAnalysisAgent.analyze_decompiled_batch()` 使用 LangChain batch API，`config={"max_concurrency": <from config.yaml>}`。
+- 批量分析：`FunctionAnalysisAgent.analyze_decompiled_batch()` 逐个函数顺序调用 LLM。
 - 输入截断：`_truncate_code_for_context()` 会依据 `llm.max_input_tokens` 做保守截断，避免超上下文。
 
 ---
@@ -130,7 +130,6 @@
   - `system_prompt_path`：prompt 文件路径（相对 `agents/`）
   - `llm.*`：`model_name/base_url/api_key/timeout/max_retries/max_completion_tokens/max_input_tokens/extra_body` 等
   - `rate_limit.*`：速率限制参数
-  - `max_concurrency`：批量并发
 
 ### 6.2 环境变量覆盖
 `config_loader.load_config()` 支持：

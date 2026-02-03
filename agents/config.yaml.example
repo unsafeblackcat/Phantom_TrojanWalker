@@ -17,7 +17,6 @@ plugins:
 FunctionAnalysisAgent:
   system_prompt: ""
   system_prompt_path: "prompt/FunctionAnalysisAgent.md"
-  max_concurrency: 2
   llm:
     model_name: deepseek-reasoner
     temperature: 0
@@ -36,7 +35,6 @@ FunctionAnalysisAgent:
 MalwareAnalysisAgent:
   system_prompt: ""
   system_prompt_path: "prompt/MalwareAnalysisAgent.md"
-  max_concurrency: 2
   llm:
     model_name: deepseek-reasoner
     temperature: 0

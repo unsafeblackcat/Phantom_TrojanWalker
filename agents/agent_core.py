@@ -74,6 +74,7 @@ def _build_llm_params(agent_name: str, agent_cfg: Any, rate_limiter: Optional[In
         "max_retries": agent_cfg.llm.max_retries,
         "timeout": agent_cfg.llm.timeout,
         "max_completion_tokens": agent_cfg.llm.max_completion_tokens,
+        "extra_body": agent_cfg.llm.extra_body,
         "rate_limiter": rate_limiter,
         "model_kwargs": {"response_format": {"type": "json_object"}},
     }
@@ -215,4 +216,3 @@ class MalwareAnalysisAgent:
                 raw_response=content,
             )
         return parsed
-

@@ -28,7 +28,7 @@ class LLMConfig(BaseModel):
             try:
                 parsed = json.loads(stripped)
             except json.JSONDecodeError as exc:
-                raise ValueError("LLM extra_body must be a JSON object.") from exc
+                raise ValueError(f"LLM extra_body must be valid JSON: {exc}") from exc
             if not isinstance(parsed, dict):
                 raise ValueError("LLM extra_body must be a JSON object.")
             return parsed

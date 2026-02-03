@@ -117,13 +117,16 @@ class AnalysisCoordinator:
             if self._is_ai_target_function(item.get("name"))
         ]
 
-    def _build_callers_lookup(self, function_xrefs: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    def _build_callers_lookup(self, function_xrefs: List[Dict[str, Any]] | None) -> Dict[str, List[Dict[str, Any]]]:
         """Build a lookup from function name to its callers list."""
+        if not function_xrefs:
+            return {}
         lookup: Dict[str, List[Dict[str, Any]]] = {}
         for xref in function_xrefs:
-            name = xref.get("name")
+            name = xref.get("name") if isinstance(xref, dict) else None
             if name:
-                lookup[name] = xref.get("callers", [])
+                callers = xref.get("callers", []) if isinstance(xref, dict) else []
+                lookup[name] = callers or []
         return lookup
 
     def _filter_functions_with_callers(
@@ -191,12 +194,18 @@ class AnalysisCoordinator:
         # 5. Fetch Functions
         logger.info("Step 5: Fetching and filtering functions...")
         raw_funcs = await self.ghidra.get_functions()
+        if raw_funcs is None:
+            logger.warning("Ghidra returned null functions list; defaulting to empty")
+            raw_funcs = []
 
         functions_data = self._build_functions_payload(raw_funcs)
 
         # 6. Fetch Strings
         logger.info("Step 6: Fetching strings from binary...")
         strings_data = await self.ghidra.get_strings()
+        if strings_data is None:
+            logger.warning("Ghidra returned null strings list; defaulting to empty")
+            strings_data = []
 
         # 7. Call Graph
         logger.info("Step 7: Generating global call graph...")
@@ -206,6 +215,9 @@ class AnalysisCoordinator:
         logger.info("Step 7.5: Fetching function cross-references...")
         func_names = self._extract_function_names(functions_data)
         function_xrefs = await self.ghidra.get_function_xrefs_batch(func_names)
+        if function_xrefs is None:
+            logger.warning("Ghidra returned null xrefs list; defaulting to empty")
+            function_xrefs = []
         callers_lookup = self._build_callers_lookup(function_xrefs)
         logger.info(f"Got xrefs for {len(function_xrefs)} functions")
 
@@ -214,6 +226,9 @@ class AnalysisCoordinator:
         
         # 调用批量反编译接口 (后端支持通过名称或地址反编译)
         decompiled_codes_raw = await self.ghidra.get_decompiled_codes_batch(func_names)
+        if decompiled_codes_raw is None:
+            logger.warning("Ghidra returned null decompile list; defaulting to empty")
+            decompiled_codes_raw = []
         
         # 将原始结果直接映射到最终结果
         decompiled_codes = self._map_decompiled_results(decompiled_codes_raw)

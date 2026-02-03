@@ -12,3 +12,4 @@ sqlalchemy
 aiofiles
 pytest
 pytest-asyncio
+colorama

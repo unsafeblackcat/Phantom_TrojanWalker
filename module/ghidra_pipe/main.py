@@ -5,11 +5,10 @@ Provides HTTP endpoints for binary analysis using Ghidra/pyghidra.
 API is compatible with the previous rz_pipe service for seamless migration.
 """
 import os
-import shutil
 import uuid
-import re
 import threading
 import logging
+import hashlib
 from typing import List
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -29,6 +28,58 @@ analyzer_lock = threading.RLock()
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 UPLOAD_DIR = os.path.join(ROOT_DIR, "data", "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+
+def _safe_tmp_upload_path() -> str:
+    """Create a temp upload path guarded against path traversal."""
+    tmp_name = f".tmp_{uuid.uuid4().hex}"
+    tmp_path = os.path.normpath(os.path.join(UPLOAD_DIR, tmp_name))
+    if os.path.commonpath([UPLOAD_DIR, tmp_path]) != UPLOAD_DIR:
+        raise HTTPException(status_code=400, detail="Invalid upload path")
+    return tmp_path
+
+
+def _resolve_final_upload_path(sha256: str) -> str:
+    """Resolve final upload path by sha256 with path traversal guard."""
+    file_path = os.path.normpath(os.path.join(UPLOAD_DIR, sha256))
+    if os.path.commonpath([UPLOAD_DIR, file_path]) != UPLOAD_DIR:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    return file_path
+
+
+def _remove_file_quietly(path: str) -> None:
+    """Best-effort file deletion to avoid masking primary errors."""
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+async def _stream_to_temp_file(file: UploadFile, tmp_path: str) -> str:
+    """Stream upload to temp file while computing sha256."""
+    hasher = hashlib.sha256()
+    with open(tmp_path, "wb") as out_file:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            hasher.update(chunk)
+            out_file.write(chunk)
+    return hasher.hexdigest()
+
+
+def _persist_upload(tmp_path: str, sha256: str) -> str:
+    """Move temp file into final path, handling collisions safely."""
+    file_path = _resolve_final_upload_path(sha256)
+    try:
+        if os.path.exists(file_path):
+            _remove_file_quietly(tmp_path)
+        else:
+            os.replace(tmp_path, file_path)
+    except OSError as e:
+        _remove_file_quietly(tmp_path)
+        raise HTTPException(status_code=500, detail=f"Failed to store upload: {e}")
+    return file_path
 
 
 def require_analyzer() -> GhidraAnalyzer:
@@ -53,19 +104,9 @@ async def upload(file: UploadFile = File(...)):
     """
     global analyzer
     
-    original_name = file.filename or ""
-    base_name = os.path.basename(original_name)
-    if not base_name:
-        base_name = "upload"
-    
-    # Keep a conservative filename charset
-    base_name = re.sub(r"[^A-Za-z0-9._-]+", "_", base_name)
-    safe_name = f"{uuid.uuid4().hex}_{base_name}"
-    path = os.path.join(UPLOAD_DIR, safe_name)
-    
-    # Save uploaded file
-    with open(path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+    tmp_path = _safe_tmp_upload_path()
+    sha256 = await _stream_to_temp_file(file, tmp_path)
+    path = _persist_upload(tmp_path, sha256)
     
     with analyzer_lock:
         # Close existing analyzer if any

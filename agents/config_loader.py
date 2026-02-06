@@ -3,7 +3,7 @@ import os
 from typing import Any, Dict, Optional
 
 import yaml
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, Field
 
 class LLMConfig(BaseModel):
     model_name: str
@@ -41,7 +41,7 @@ class RateLimitConfig(BaseModel):
 
 class PluginConfig(BaseModel):
     base_url: str
-    endpoints: Dict[str, str]
+    endpoints: Dict[str, str] = Field(default_factory=dict)
 
 class AgentConfig(BaseModel):
     system_prompt: str = ""
@@ -89,12 +89,12 @@ def _apply_env_overrides(config: AppConfig) -> None:
     Refactor note: use a guard clause to reduce nesting.
     """
     ghidra_base_url = os.getenv("PTW_GHIDRA_BASE_URL")
-    if not ghidra_base_url:
-        return
-
-    # Pydantic models are mutable by default.
-    if "ghidra" in config.plugins:
+    if ghidra_base_url and "ghidra" in config.plugins:
         config.plugins["ghidra"].base_url = ghidra_base_url
+
+    mcp_base_url = os.getenv("PTW_MCP_BASE_URL")
+    if mcp_base_url and "mcp" in config.plugins:
+        config.plugins["mcp"].base_url = mcp_base_url
 
 
 def _load_agent_prompts(config: AppConfig, config_path: str) -> None:

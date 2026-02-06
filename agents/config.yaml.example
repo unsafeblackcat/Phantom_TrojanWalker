@@ -13,6 +13,9 @@ plugins:
       decompile_batch: "/decompile_batch"
       xrefs: "/xrefs"
       xrefs_batch: "/xrefs_batch"
+  mcp:
+    base_url: "http://localhost:9000/mcp"
+    endpoints: {}
 
 FunctionAnalysisAgent:
   system_prompt: ""

@@ -12,3 +12,4 @@ sqlalchemy
 aiofiles
 pytest
 pytest-asyncio
+fastmcp>=2.14.4

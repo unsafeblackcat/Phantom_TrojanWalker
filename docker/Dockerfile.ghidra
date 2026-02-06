@@ -45,10 +45,11 @@ COPY module /app/module
 # Create data directories
 RUN mkdir -p /app/data/uploads /app/data/projects
 
-# Expose port
+# Expose ports
 EXPOSE 8000
+EXPOSE 9000
 
-# Run the FastAPI service
+# Run the FastAPI service and the MCP server
 # We run from /app so that ROOT_DIR calculation in main.py works correctly
 # (ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(abspath))))
-CMD ["python", "module/ghidra_pipe/main.py"]
+CMD ["bash", "-lc", "python module/ghidra_pipe/main.py & python module/ghidra_mcp/main.py"]

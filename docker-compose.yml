@@ -21,10 +21,14 @@ services:
     container_name: ph_ghidra
     ports:
       - "127.0.0.1:8000:8000"
+      - "127.0.0.1:9000:9000"
     volumes:
       - ./data:/app/data
     environment:
       - GHIDRA_INSTALL_DIR=/ghidra
+      - GHIDRA_MCP_PORT=9000
+      - GHIDRA_PIPE_BASE_URL=http://localhost:8000
+      - GHIDRA_MCP_ALLOW_ORIGINS=*
     depends_on:
       - ph_backend
 

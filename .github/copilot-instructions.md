@@ -2,6 +2,7 @@
 
 ## 大图（先理解边界）
 - Ghidra 引擎服务（:8000）：[module/ghidra_pipe/main.py](../module/ghidra_pipe/main.py) 维护"当前打开的二进制"全局状态；提供 `/upload`→`/analyze`→`/metadata`/`/functions`/`/strings`/`/callgraph`/`/decompile_batch`。
+- Ghidra MCP 服务（:9000）：[module/ghidra_mcp/main.py](../module/ghidra_mcp/main.py) 提供 `decompile_function`/`function_xrefs` 工具，复用 ghidra_pipe 的 analyzer。
 - 后端任务服务（:8001，API 前缀 `/api`）：[backend/api/endpoints.py](../backend/api/endpoints.py) 负责上传/去重/落库；worker 在 [backend/worker/worker.py](../backend/worker/worker.py) 异步出队执行分析；任务模型在 [backend/models/task.py](../backend/models/task.py)（SQLite）。
 - AI 编排：Coordinator 在 [agents/analysis_coordinator.py](../agents/analysis_coordinator.py)，通过 [agents/ghidra_client.py](../agents/ghidra_client.py) 调 Ghidra HTTP，再调用 LLM Agents（[agents/agent_core.py](../agents/agent_core.py)）。
 - 前端：开发态 Vite 代理见 [frontend/vite.config.js](../frontend/vite.config.js)；容器/生产用 [frontend/server.mjs](../frontend/server.mjs) 代理 `/api/* -> PTW_BACKEND_BASE_URL`。
@@ -27,5 +28,6 @@
 
 ## 配置注意
 - `agents/config.yaml` 应对齐 [agents/config.yaml.example](../agents/config.yaml.example)：代码目前按 `plugins.ghidra` 取配置（[backend/core/factory.py](../backend/core/factory.py)）。
+- MCP 地址配置：`plugins.mcp.base_url`（例如 `http://localhost:9000/mcp`），可用 `PTW_MCP_BASE_URL` 覆盖。
 - 不要在日志/PR/issue 中泄露 `api_key`；优先用示例配置并在本地注入密钥。
 

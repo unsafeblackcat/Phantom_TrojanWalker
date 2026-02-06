@@ -8,6 +8,7 @@ from config_loader import load_config
 from exceptions import LLMResponseError
 from langchain.messages import SystemMessage, HumanMessage
 from langchain_core.rate_limiters import InMemoryRateLimiter
+from fastmcp import Client
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +124,17 @@ class FunctionAnalysisAgent:
         ]
         last_content = ""
         for attempt in range(1, self._json_retry_attempts + 1):
-            response = await self.llm.ainvoke(messages)
+            try:
+                response = await self.llm.ainvoke(messages)
+            except Exception as exc:
+                last_content = str(exc)
+                logger.warning(
+                    "FunctionAnalysisAgent LLM call failed (attempt %d/%d): %s",
+                    attempt,
+                    self._json_retry_attempts,
+                    exc,
+                )
+                continue
             content = _response_to_text(response)
             last_content = content
             parsed = _json_or_error_payload("FunctionAnalysisAgent", content)
@@ -147,7 +158,7 @@ class FunctionAnalysisAgent:
 
                 Notes:
                 - Sequentially invokes the LLM per function.
-                - JSON parse failures raise an error to avoid partial results.
+                - JSON parse failures are captured per function to avoid aborting the batch.
         """
         if not items:
             return []
@@ -172,26 +183,35 @@ class FunctionAnalysisAgent:
                 HumanMessage(content=str(code)),
             ]
             last_content = ""
-            parsed = None
             for attempt in range(1, self._json_retry_attempts + 1):
-                response = await self.llm.ainvoke(messages)
+                try:
+                    response = await self.llm.ainvoke(messages)
+                except Exception as exc:
+                    last_content = str(exc)
+                    logger.warning(
+                        "FunctionAnalysisAgent LLM call failed for %s (attempt %d/%d): %s",
+                        name,
+                        attempt,
+                        self._json_retry_attempts,
+                        exc,
+                    )
+                    continue
                 content = _response_to_text(response)
                 last_content = content
                 parsed = _json_or_error_payload("FunctionAnalysisAgent", content)
                 if "error" not in parsed:
-                    break
+                    return parsed
                 logger.warning(
                     "FunctionAnalysisAgent JSON parse failed for %s (attempt %d/%d)",
                     name,
                     attempt,
                     self._json_retry_attempts,
                 )
-            if not parsed or "error" in parsed:
-                raise LLMResponseError(
-                    "Failed to parse JSON response from FunctionAnalysisAgent",
-                    raw_response=last_content,
-                )
-            return parsed
+            return {
+                "error": "Failed to parse JSON response from FunctionAnalysisAgent",
+                "agent": "FunctionAnalysisAgent",
+                "raw_response": last_content,
+            }
 
         analyses = await asyncio.gather(
             *[_analyze_one(name, code) for name, code in zip(prepared_names, prepared_codes)]
@@ -207,12 +227,84 @@ class MalwareAnalysisAgent:
         self.config = load_config()
         self.agent_config = self.config.MalwareAnalysisAgent
         self.llm = _create_llm("MalwareAnalysisAgent", self.agent_config)
+        self.mcp_base_url = self._resolve_mcp_base_url()
+
+    def _resolve_mcp_base_url(self) -> Optional[str]:
+        plugins = getattr(self.config, "plugins", {})
+        mcp_cfg = plugins.get("mcp") if isinstance(plugins, dict) else None
+        base_url = getattr(mcp_cfg, "base_url", None)
+        return str(base_url).rstrip("/") if base_url else None
+
+    async def _call_mcp_tool(self, client: Client, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+        result = await client.call_tool(name=name, arguments=args, raise_on_error=False)
+        if getattr(result, "is_error", False):
+            message = "MCP tool error"
+            if getattr(result, "content", None):
+                first = result.content[0]
+                message = getattr(first, "text", None) or message
+            return {"error": message}
+
+        if getattr(result, "data", None) is not None:
+            if isinstance(result.data, dict):
+                return result.data
+            return {"data": result.data}
+
+        for content in getattr(result, "content", []) or []:
+            text = getattr(content, "text", None)
+            if not text:
+                continue
+            try:
+                parsed = json.loads(text)
+                if isinstance(parsed, dict):
+                    return parsed
+                return {"data": parsed}
+            except Exception:
+                return {"text": text}
+
+        return {"error": "Empty MCP tool response"}
+
+    async def _fetch_mcp_enrichment(self, analysis_results: list) -> List[Dict[str, Any]]:
+        targets = []
+        for item in analysis_results:
+            name = item.get("name") if isinstance(item, dict) else None
+            if name:
+                targets.append(str(name))
+
+        if not targets or not self.mcp_base_url:
+            return []
+
+        enrichment: List[Dict[str, Any]] = []
+        async with Client(self.mcp_base_url) as client:
+            for name in targets:
+                decompiled = await self._call_mcp_tool(
+                    client,
+                    name="decompile_function",
+                    args={"target": name},
+                )
+                xrefs = await self._call_mcp_tool(
+                    client,
+                    name="function_xrefs",
+                    args={"target": name},
+                )
+                enrichment.append({
+                    "name": name,
+                    "decompile": decompiled,
+                    "xrefs": xrefs,
+                })
+
+        return enrichment
 
     async def analyze(self, analysis_results: list, metadata: dict) -> dict:
         context = {
             "metadata": metadata,
-            "function_analyses": analysis_results
+            "function_analyses": analysis_results,
         }
+
+        if self.mcp_base_url:
+            try:
+                context["mcp_enrichment"] = await self._fetch_mcp_enrichment(analysis_results)
+            except Exception as exc:
+                logger.warning("MCP enrichment failed: %s", exc)
         messages = [
             SystemMessage(content=self.agent_config.system_prompt),
             HumanMessage(content=f"{json.dumps(context, ensure_ascii=False, indent=2)}")

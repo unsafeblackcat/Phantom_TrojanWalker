@@ -90,6 +90,17 @@ def require_analyzer() -> GhidraAnalyzer:
     return analyzer
 
 
+def _close_analyzer() -> None:
+    """Close the current analyzer and clear global state."""
+    global analyzer
+    if analyzer is None:
+        return
+    try:
+        analyzer.close()
+    finally:
+        analyzer = None
+
+
 @app.get("/health_check")
 def health_check():
     """Health check endpoint."""
@@ -110,11 +121,10 @@ async def upload(file: UploadFile = File(...)):
     
     with analyzer_lock:
         # Close existing analyzer if any
-        if analyzer:
-            try:
-                analyzer.close()
-            except Exception as e:
-                logger.warning(f"Error closing previous analyzer: {e}")
+        try:
+            _close_analyzer()
+        except Exception as e:
+            logger.warning(f"Error closing previous analyzer: {e}")
         
         # Create new analyzer and open the file
         analyzer = GhidraAnalyzer(path)
@@ -123,6 +133,14 @@ async def upload(file: UploadFile = File(...)):
             raise HTTPException(500, "Ghidra open failed")
     
     return {"status": "ok"}
+
+
+@app.post("/close")
+def close_analyzer():
+    """Explicitly release Ghidra resources for the current binary."""
+    with analyzer_lock:
+        _close_analyzer()
+    return {"status": "closed"}
 
 
 @app.get("/analyze")

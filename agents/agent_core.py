@@ -62,11 +62,22 @@ def _build_rate_limiter(rate_limit_cfg: Optional[Any]) -> Optional[InMemoryRateL
     )
 
 
-def _build_llm_params(agent_name: str, agent_cfg: Any, rate_limiter: Optional[InMemoryRateLimiter]) -> Dict[str, Any]:
+def _build_llm_params(
+    agent_name: str,
+    agent_cfg: Any,
+    rate_limiter: Optional[InMemoryRateLimiter],
+    include_response_format: bool = True,
+) -> Dict[str, Any]:
     """Build LLM init params while filtering None values.
 
     Refactor note: centralizes default handling for consistency.
     """
+    model_kwargs: Dict[str, Any] = {}
+    if include_response_format:
+        model_kwargs["response_format"] = {"type": "json_object"}
+    if agent_cfg.llm.extra_body:
+        model_kwargs["extra_body"] = agent_cfg.llm.extra_body
+
     params = {
         "name": agent_name,
         "base_url": agent_cfg.llm.base_url,
@@ -76,10 +87,7 @@ def _build_llm_params(agent_name: str, agent_cfg: Any, rate_limiter: Optional[In
         "timeout": agent_cfg.llm.timeout,
         "max_completion_tokens": agent_cfg.llm.max_completion_tokens,
         "rate_limiter": rate_limiter,
-        "model_kwargs": {
-            "response_format": {"type": "json_object"},
-            "extra_body": agent_cfg.llm.extra_body
-        },
+        "model_kwargs": model_kwargs or None,
     }
     # 过滤掉为 None 的参数，确保空值时使用 LangChain 或 Provider 的默认值
     return {k: v for k, v in params.items() if v is not None}
@@ -89,7 +97,15 @@ def _create_llm(agent_name: str, agent_cfg: Any) -> ChatOpenAI:
     """Create a ChatOpenAI client with shared initialization logic."""
     _validate_api_key(agent_name, agent_cfg.llm.api_key)
     rate_limiter = _build_rate_limiter(agent_cfg.rate_limit)
-    llm_params = _build_llm_params(agent_name, agent_cfg, rate_limiter)
+    llm_params = _build_llm_params(agent_name, agent_cfg, rate_limiter, include_response_format=True)
+    return ChatOpenAI(**llm_params)
+
+
+def _create_summary_llm(agent_name: str, agent_cfg: Any) -> ChatOpenAI:
+    """Create a lightweight ChatOpenAI client for summarization."""
+    _validate_api_key(agent_name, agent_cfg.llm.api_key)
+    rate_limiter = _build_rate_limiter(agent_cfg.rate_limit)
+    llm_params = _build_llm_params(agent_name, agent_cfg, rate_limiter, include_response_format=False)
     return ChatOpenAI(**llm_params)
 
 class FunctionAnalysisAgent:
@@ -227,6 +243,7 @@ class MalwareAnalysisAgent:
         self.config = load_config()
         self.agent_config = self.config.MalwareAnalysisAgent
         self.llm = _create_llm("MalwareAnalysisAgent", self.agent_config)
+        self.summary_llm = _create_summary_llm("MalwareAnalysisAgentSummary", self.agent_config)
         self.mcp_base_url = self._resolve_mcp_base_url()
 
     def _resolve_mcp_base_url(self) -> Optional[str]:
@@ -306,11 +323,11 @@ class MalwareAnalysisAgent:
             except Exception as exc:
                 logger.warning("MCP enrichment failed: %s", exc)
         messages = [
-            SystemMessage(content=self.agent_config.system_prompt),
-            HumanMessage(content=f"{json.dumps(context, ensure_ascii=False, indent=2)}")
+            {"role": "system", "content": self.agent_config.system_prompt},
+            {"role": "user", "content": json.dumps(context, ensure_ascii=False, indent=2)},
         ]
-        response = await self.llm.ainvoke(messages)
-        content = _response_to_text(response)
+
+        content = await self._invoke_with_summarization_middleware(messages)
         parsed = _json_or_error_payload("MalwareAnalysisAgent", content)
         if "error" in parsed:
             raise LLMResponseError(
@@ -318,3 +335,34 @@ class MalwareAnalysisAgent:
                 raw_response=content,
             )
         return parsed
+
+    async def _invoke_with_summarization_middleware(self, messages: List[Dict[str, str]]) -> str:
+        from langchain.agents import create_agent
+        from langchain.agents.middleware import SummarizationMiddleware
+
+        max_input_tokens = getattr(self.agent_config.llm, "max_input_tokens", None)
+        trigger_tokens = 100000
+        if isinstance(max_input_tokens, int) and max_input_tokens > 0:
+            trigger_tokens = int(max_input_tokens * 0.9)
+
+        middleware = SummarizationMiddleware(
+            model=self.summary_llm,
+            trigger=("tokens", trigger_tokens),
+            keep=("messages", 10),
+            summary_prompt="你是一位拥有深厚逆向工程背景的**资深恶意软件分析师**，以下是你之前的分析结果，由于上下文长度限制，需要对其进行总结以便继续分析：",
+        )
+        agent = create_agent(
+            model=self.llm,
+            tools=[],
+            middleware=[middleware],
+        )
+        if hasattr(agent, "ainvoke"):
+            result = await agent.ainvoke({"messages": messages})
+        else:
+            result = agent.invoke({"messages": messages})
+
+        if isinstance(result, dict) and "output" in result:
+            return _response_to_text(result["output"])
+        if isinstance(result, dict) and "messages" in result and result["messages"]:
+            return _response_to_text(result["messages"][-1])
+        return _response_to_text(result)

@@ -8,7 +8,7 @@ from config_loader import load_config
 from exceptions import LLMResponseError
 from langchain.messages import SystemMessage, HumanMessage
 from langchain_core.rate_limiters import InMemoryRateLimiter
-from fastmcp import Client
+from langchain_mcp_adapters.client import MultiServerMCPClient
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +245,18 @@ class MalwareAnalysisAgent:
         self.llm = _create_llm("MalwareAnalysisAgent", self.agent_config)
         self.summary_llm = _create_summary_llm("MalwareAnalysisAgentSummary", self.agent_config)
         self.mcp_base_url = self._resolve_mcp_base_url()
+        self._json_retry_attempts = self._resolve_json_retry_attempts()
+
+    def _resolve_json_retry_attempts(self) -> int:
+        # Prefer configured max_retries; ensure at least 1 attempt.
+        max_retries = getattr(self.agent_config.llm, "max_retries", None)
+        if isinstance(max_retries, int) and max_retries > 0:
+            return max_retries
+        return 3
+
+    def _retry_delay(self, attempt: int) -> float:
+        # Simple bounded backoff to avoid hammering the provider.
+        return float(min(2 * attempt, 10))
 
     def _resolve_mcp_base_url(self) -> Optional[str]:
         plugins = getattr(self.config, "plugins", {})
@@ -252,33 +264,18 @@ class MalwareAnalysisAgent:
         base_url = getattr(mcp_cfg, "base_url", None)
         return str(base_url).rstrip("/") if base_url else None
 
-    async def _call_mcp_tool(self, client: Client, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
-        result = await client.call_tool(name=name, arguments=args, raise_on_error=False)
-        if getattr(result, "is_error", False):
-            message = "MCP tool error"
-            if getattr(result, "content", None):
-                first = result.content[0]
-                message = getattr(first, "text", None) or message
-            return {"error": message}
+    async def _call_mcp_tool(self, tool: Any, args: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            if hasattr(tool, "ainvoke"):
+                result = await tool.ainvoke(args)
+            else:
+                result = tool.invoke(args)
+        except Exception as exc:
+            return {"error": str(exc)}
 
-        if getattr(result, "data", None) is not None:
-            if isinstance(result.data, dict):
-                return result.data
-            return {"data": result.data}
-
-        for content in getattr(result, "content", []) or []:
-            text = getattr(content, "text", None)
-            if not text:
-                continue
-            try:
-                parsed = json.loads(text)
-                if isinstance(parsed, dict):
-                    return parsed
-                return {"data": parsed}
-            except Exception:
-                return {"text": text}
-
-        return {"error": "Empty MCP tool response"}
+        if isinstance(result, dict):
+            return result
+        return {"data": result}
 
     async def _fetch_mcp_enrichment(self, analysis_results: list) -> List[Dict[str, Any]]:
         targets = []
@@ -290,24 +287,37 @@ class MalwareAnalysisAgent:
         if not targets or not self.mcp_base_url:
             return []
 
+        client = MultiServerMCPClient(
+            {
+                "ghidra": {
+                    "transport": "http",
+                    "url": self.mcp_base_url,
+                }
+            }
+        )
+        tools = await client.get_tools()
+        tool_map = {tool.name: tool for tool in tools}
+        decompile_tool = tool_map.get("decompile_function")
+        xrefs_tool = tool_map.get("function_xrefs")
+        if not decompile_tool or not xrefs_tool:
+            logger.warning("MCP tools missing from server: %s", list(tool_map.keys()))
+            return []
+
         enrichment: List[Dict[str, Any]] = []
-        async with Client(self.mcp_base_url) as client:
-            for name in targets:
-                decompiled = await self._call_mcp_tool(
-                    client,
-                    name="decompile_function",
-                    args={"target": name},
-                )
-                xrefs = await self._call_mcp_tool(
-                    client,
-                    name="function_xrefs",
-                    args={"target": name},
-                )
-                enrichment.append({
-                    "name": name,
-                    "decompile": decompiled,
-                    "xrefs": xrefs,
-                })
+        for name in targets:
+            decompiled = await self._call_mcp_tool(
+                decompile_tool,
+                args={"target": name},
+            )
+            xrefs = await self._call_mcp_tool(
+                xrefs_tool,
+                args={"target": name},
+            )
+            enrichment.append({
+                "name": name,
+                "decompile": decompiled,
+                "xrefs": xrefs,
+            })
 
         return enrichment
 
@@ -327,14 +337,36 @@ class MalwareAnalysisAgent:
             {"role": "user", "content": json.dumps(context, ensure_ascii=False, indent=2)},
         ]
 
-        content = await self._invoke_with_summarization_middleware(messages)
-        parsed = _json_or_error_payload("MalwareAnalysisAgent", content)
-        if "error" in parsed:
-            raise LLMResponseError(
-                "Failed to parse JSON response from MalwareAnalysisAgent",
-                raw_response=content,
-            )
-        return parsed
+        last_content = ""
+        for attempt in range(1, self._json_retry_attempts + 1):
+            try:
+                content = await self._invoke_with_summarization_middleware(messages)
+            except Exception as exc:
+                last_content = str(exc)
+                logger.warning(
+                    "MalwareAnalysisAgent LLM call failed (attempt %d/%d): %s",
+                    attempt,
+                    self._json_retry_attempts,
+                    exc,
+                )
+            else:
+                last_content = content
+                parsed = _json_or_error_payload("MalwareAnalysisAgent", content)
+                if "error" not in parsed:
+                    return parsed
+                logger.warning(
+                    "MalwareAnalysisAgent JSON parse failed (attempt %d/%d)",
+                    attempt,
+                    self._json_retry_attempts,
+                )
+
+            if attempt < self._json_retry_attempts:
+                await asyncio.sleep(self._retry_delay(attempt))
+
+        raise LLMResponseError(
+            "Failed to parse JSON response from MalwareAnalysisAgent",
+            raw_response=last_content,
+        )
 
     async def _invoke_with_summarization_middleware(self, messages: List[Dict[str, str]]) -> str:
         from langchain.agents import create_agent

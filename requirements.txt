@@ -1,6 +1,7 @@
 langchain
 langchain-openai
 langchain-deepseek
+langchain-mcp-adapters
 pyyaml
 httpx
 pydantic

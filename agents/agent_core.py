@@ -287,6 +287,12 @@ class MalwareAnalysisAgent:
         if not targets or not self.mcp_base_url:
             return []
 
+        logger.info(
+            "MCP enrichment enabled: base_url=%s targets=%d",
+            self.mcp_base_url,
+            len(targets),
+        )
+
         client = MultiServerMCPClient(
             {
                 "ghidra": {
@@ -297,8 +303,19 @@ class MalwareAnalysisAgent:
         )
         tools = await client.get_tools()
         tool_map = {tool.name: tool for tool in tools}
-        decompile_tool = tool_map.get("decompile_function")
-        xrefs_tool = tool_map.get("function_xrefs")
+
+        def _resolve_tool(name: str) -> Optional[Any]:
+            direct = tool_map.get(name)
+            if direct:
+                return direct
+            # Some MCP adapters prefix tool names with server identifiers.
+            for tool_name, tool in tool_map.items():
+                if tool_name.endswith(name):
+                    return tool
+            return None
+
+        decompile_tool = _resolve_tool("decompile_function")
+        xrefs_tool = _resolve_tool("function_xrefs")
         if not decompile_tool or not xrefs_tool:
             logger.warning("MCP tools missing from server: %s", list(tool_map.keys()))
             return []

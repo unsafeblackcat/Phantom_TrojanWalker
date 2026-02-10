@@ -1,6 +1,6 @@
 plugins:
   ghidra:
-    base_url: "http://localhost:8000"
+    base_url: "http://ph_ghidra:8000"
     endpoints:
       health_check: "/health_check"
       upload: "/upload"
@@ -13,6 +13,9 @@ plugins:
       decompile_batch: "/decompile_batch"
       xrefs: "/xrefs"
       xrefs_batch: "/xrefs_batch"
+  mcp:
+    base_url: "http://ph_ghidra:9000/mcp"
+    endpoints: {}
 
 FunctionAnalysisAgent:
   system_prompt: ""
@@ -42,7 +45,7 @@ MalwareAnalysisAgent:
     base_url: "https://api.deepseek.com/chat/completions"
     extra_body: {}
     max_retries: 3
-    timeout: 120
+    timeout: 600
     max_completion_tokens: 32768
     max_input_tokens: 131072
   rate_limit:

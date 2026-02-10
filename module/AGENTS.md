@@ -1,6 +1,8 @@
 # module/AGENTS.md
 
-本模块目前主要包含 `ghidra_pipe/`：一个 **Ghidra 引擎 HTTP 服务**（FastAPI），封装 pyghidra 调用，为上层提供结构化的二进制分析数据、交叉引用与反编译结果。
+本模块目前包含 `ghidra_pipe/` 与 `ghidra_mcp/`：
+- `ghidra_pipe/`：**Ghidra 引擎 HTTP 服务**（FastAPI），封装 pyghidra 调用，为上层提供结构化的二进制分析数据、交叉引用与反编译结果。
+- `ghidra_mcp/`：**FastMCP 工具服务**（HTTP），对外暴露反编译与交叉引用工具，复用 ghidra_pipe 的当前 analyzer 状态。
 
 > 关键设计：服务端维护"当前打开的二进制"的全局状态，因此系统整体分析必须单并发执行（由 backend worker 强制）。
 
@@ -12,6 +14,7 @@
 - 启动一个 HTTP 服务（默认 :8000），暴露 `upload/analyze/metadata/functions/strings/callgraph/xrefs/xrefs_batch/decompile_batch` 等接口。
 - 管理 pyghidra 生命周期：初始化 JVM、打开二进制、执行分析、返回 JSON。
 - 通过 Ghidra DecompInterface 提供反编译能力。
+- 启动一个 MCP 服务（默认 :9000），提供只读工具 `decompile_function` 与 `function_xrefs`。
 
 **本模块不做什么**
 - 不做任务排队/去重/落库（backend 负责）。
@@ -26,6 +29,9 @@
   - 全局变量：`analyzer`（当前打开的二进制）、`analyzer_lock`（RLock）
   - 上传目录：`<repo_root>/data/uploads/`
 - `ghidra_pipe/analyzer.py`
+   - `ghidra_mcp/main.py`
+    - FastMCP server，基于 `/decompile` 与 `/xrefs` 封装为 MCP 工具
+    - 运行地址默认 `http://localhost:9000/mcp`
   - `GhidraAnalyzer`：对 pyghidra 的轻量封装，统一返回结构化 JSON。
   - 关键功能映射：
     - `get_info()`：元信息（format, arch, bits 等）
@@ -113,6 +119,16 @@
 
 ---
 
+## 4.11 MCP API（ghidra_mcp 服务）
+
+### 4.11.1 Tool: decompile_function
+输入：`target`（函数名或地址）
+输出：`{address, code}`（来自 ghidra_pipe /decompile）
+
+### 4.11.2 Tool: function_xrefs
+输入：`target`（函数名或地址）
+输出：`{name, offset, callers, callees}`（来自 ghidra_pipe /xrefs）
+
 ## 5. GhidraAnalyzer 封装约定
 
 实现：`ghidra_pipe/analyzer.py`
@@ -129,6 +145,7 @@
 
 - 运行方式：
   - 本地：`python module/ghidra_pipe/main.py`（默认 8000）
+  - 本地 MCP：`python module/ghidra_mcp/main.py`（默认 9000）
   - Docker：见 `docker/Dockerfile.ghidra` 与 `docker-compose.yml`
 - 依赖：
   - `pyghidra` Python 包（需要 Ghidra 12+）

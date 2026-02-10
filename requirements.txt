@@ -1,6 +1,7 @@
 langchain
 langchain-openai
 langchain-deepseek
+langchain-mcp-adapters
 pyyaml
 httpx
 pydantic
@@ -12,4 +13,5 @@ sqlalchemy
 aiofiles
 pytest
 pytest-asyncio
+fastmcp>=2.14.4
 colorama

@@ -95,6 +95,10 @@ class AnalysisCoordinator:
         # Refactor: keep filtering rules in one place.
         return [f["name"] for f in functions_data if f.get("name")]
 
+    def _filter_function_names_for_decompile(self, func_names: List[str]) -> List[str]:
+        """Limit decompile targets to auto-named and common entrypoint functions."""
+        return [name for name in func_names if self._is_ai_target_function(name)]
+
     def _map_decompiled_results(self, decompiled_codes_raw: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         # Refactor: normalize backend results and guard missing fields.
         mapped: List[Dict[str, str]] = []
@@ -214,7 +218,9 @@ class AnalysisCoordinator:
         # 7.5 Fetch function cross-references (callers/callees)
         logger.info("Step 7.5: Fetching function cross-references...")
         func_names = self._extract_function_names(functions_data)
-        function_xrefs = await self.ghidra.get_function_xrefs_batch(func_names)
+        decompile_targets = self._filter_function_names_for_decompile(func_names)
+        logger.info(f"Xrefs targets: {len(decompile_targets)} functions")
+        function_xrefs = await self.ghidra.get_function_xrefs_batch(decompile_targets)
         if function_xrefs is None:
             logger.warning("Ghidra returned null xrefs list; defaulting to empty")
             function_xrefs = []
@@ -225,7 +231,8 @@ class AnalysisCoordinator:
         logger.info(f"Step 8: Decompiling functions (Batch mode)...")
         
         # 调用批量反编译接口 (后端支持通过名称或地址反编译)
-        decompiled_codes_raw = await self.ghidra.get_decompiled_codes_batch(func_names)
+        logger.info(f"Decompile targets: {len(decompile_targets)} functions")
+        decompiled_codes_raw = await self.ghidra.get_decompiled_codes_batch(decompile_targets)
         if decompiled_codes_raw is None:
             logger.warning("Ghidra returned null decompile list; defaulting to empty")
             decompiled_codes_raw = []

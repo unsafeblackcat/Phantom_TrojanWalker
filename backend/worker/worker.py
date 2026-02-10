@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import traceback
 from datetime import datetime
 from sqlalchemy.orm import Session
 
@@ -133,10 +132,15 @@ class AnalysisWorker:
 
             task.finished_at = datetime.now()
         except Exception as e:
-            tb = traceback.format_exc()
-            logger.error(f"Analysis failed: {tb}")
+            logger.error(
+                "Analysis failed for task %s (%s): %s",
+                task.task_id,
+                task.filename,
+                e,
+                exc_info=True,
+            )
             task.status = "failed"
-            task.error_message = f"{e}\n{tb}"
+            task.error_message = str(e) or "Analysis failed."
         finally:
             db.commit()
 

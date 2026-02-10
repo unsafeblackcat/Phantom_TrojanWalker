@@ -13,6 +13,7 @@ services:
       - ./agents/config.yaml:/app/agents/config.yaml:ro
     environment:
       - PTW_GHIDRA_BASE_URL=http://ph_ghidra:8000
+      - PTW_MCP_BASE_URL=http://ph_ghidra:9000/mcp
 
   ph_ghidra:
     build:

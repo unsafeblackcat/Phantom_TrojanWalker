@@ -13,6 +13,14 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 logger = logging.getLogger(__name__)
 
 
+def _log_exception_group(prefix: str, exc: Exception) -> None:
+    logger.exception("%s: %s", prefix, exc)
+    group_type = getattr(__import__("builtins"), "BaseExceptionGroup", None)
+    if group_type and isinstance(exc, group_type):
+        for idx, sub_exc in enumerate(exc.exceptions):
+            logger.error("%s sub[%d]: %r", prefix, idx, sub_exc)
+
+
 def _response_to_text(resp: Any) -> str:
     content = getattr(resp, "content", None)
     return str(content) if content is not None else str(resp)
@@ -271,6 +279,7 @@ class MalwareAnalysisAgent:
             else:
                 result = tool.invoke(args)
         except Exception as exc:
+            logger.warning("MCP tool call failed: %s", exc)
             return {"error": str(exc)}
 
         if isinstance(result, dict):
@@ -301,8 +310,15 @@ class MalwareAnalysisAgent:
                 }
             }
         )
-        tools = await client.get_tools()
+        try:
+            tools = await client.get_tools()
+        except Exception as exc:
+            _log_exception_group("MCP get_tools failed", exc)
+            return []
+
         tool_map = {tool.name: tool for tool in tools}
+        if not tool_map:
+            logger.warning("MCP returned no tools from server")
 
         def _resolve_tool(name: str) -> Optional[Any]:
             direct = tool_map.get(name)
@@ -349,6 +365,7 @@ class MalwareAnalysisAgent:
                 context["mcp_enrichment"] = await self._fetch_mcp_enrichment(analysis_results)
             except Exception as exc:
                 logger.warning("MCP enrichment failed: %s", exc)
+
         messages = [
             {"role": "system", "content": self.agent_config.system_prompt},
             {"role": "user", "content": json.dumps(context, ensure_ascii=False, indent=2)},

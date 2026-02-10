@@ -1,6 +1,6 @@
 plugins:
   ghidra:
-    base_url: "http://localhost:8000"
+    base_url: "http://ph_ghidra:8000"
     endpoints:
       health_check: "/health_check"
       upload: "/upload"
@@ -14,7 +14,7 @@ plugins:
       xrefs: "/xrefs"
       xrefs_batch: "/xrefs_batch"
   mcp:
-    base_url: "http://localhost:9000/mcp"
+    base_url: "http://ph_ghidra:9000/mcp"
     endpoints: {}
 
 FunctionAnalysisAgent:

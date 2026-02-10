@@ -1,13 +1,6 @@
 # Phantom TrojanWalker - AI 恶意软件自动化分析框架
 
-Phantom TrojanWalker 是一个高度模块化的二进制分析与威胁检测平台。它创新性地结合了 **Ghidra** 的底层逆向能力、**LangChain** 的 AI 编排能力以及 **DeepSeek** 的大规模语言模型专家知识，旨在为安全研究员提供全自动化的恶意代码审计与风险评估。
-
-## 🚀 核心能力
-
-- **🤖 AI 协同分析**: 集成 LangChain ReAct 模式，由 AI 智能体自主调用 Ghidra 引擎获取函数、字符串、调用图等关键信息。
-- **🔍 深度逆向解析**: 基于 `pyghidra` 和 Ghidra DecompInterface，支持多架构反编译、符号恢复及全局调用图提取。
-- **📊 任务化管理 (v2.0)**: 提供基于任务队列的异步分析模式，支持历史任务查询、SHA256 去重及状态追踪。
-- **💻 现代化看板**: 基于 React + TailwindCSS + Lucide 构建的实时分析控制台，直观展示恶意评分与证据链。
+Phantom TrojanWalker 是一个模块化的二进制分析与威胁检测平台，串联 Ghidra 静态分析、LLM 结构化研判与任务化后端，实现从样本上传到报告生成的自动化流水线。
 
 ## 🏗 系统架构
 
@@ -85,117 +78,178 @@ graph TD
     Coord -->|"结果落库"| DB
 ```
 
-## 🛠️ 环境准备
+## 🧩 目录结构
 
-### 1. 基础环境
-- **Python**: 3.10+
-- **Node.js**: 18+ (用于前端构建)
-- **Ghidra**: 12.0+ (Docker 镜像内置，或本地安装并设置 `GHIDRA_INSTALL_DIR`)
-- **JDK**: 21+ (Ghidra 12 需要)
-
-### 2. 依赖安装
-```bash
-# 安装 Python 依赖
-pip install -r requirements.txt
-
-# 安装前端依赖
-cd frontend
-npm install
+```text
+├── agents/             # AI 编排层（Coordinator / GhidraClient / Prompts）
+├── backend/            # API + 任务系统 + SQLite
+├── frontend/           # React 前端看板
+├── module/             # ghidra_pipe + ghidra_mcp
+├── data/               # 上传文件与任务数据
+└── docker-compose.yml  # 一键启动
 ```
 
-### 3. 配置信息
-在 `agents/config.yaml` 中配置 Ghidra 插件地址与两个 Agent 的 LLM 参数（字段名以代码为准，见 `agents/config_loader.py`）：
+## ✅ 环境准备
+
+- **Python**: 3.10+
+- **Node.js**: 18+
+- **Ghidra**: 12.0+（Docker 内置或本地安装）
+- **JDK**: 21+
+
+## ⚙️ 配置
+
+1. 复制配置模板：
+
+```bash
+cd agents
+cp config.yaml.example config.yaml
+```
+
+2. 编辑 `agents/config.yaml`，至少配置 LLM 与 Ghidra 地址：
+
 ```yaml
 plugins:
   ghidra:
-    base_url: "http://localhost:8000"
+    base_url: "http://ph_ghidra:8000"
     endpoints:
+      health_check: "/health_check"
       upload: "/upload"
       analyze: "/analyze"
+      metadata: "/metadata"
       functions: "/functions"
+      strings: "/strings"
+      callgraph: "/callgraph"
+      decompile: "/decompile"
+      decompile_batch: "/decompile_batch"
+      xrefs: "/xrefs"
+      xrefs_batch: "/xrefs_batch"
+  mcp:
+    base_url: "http://ph_ghidra:9000/mcp"
+    endpoints: {}
 
 FunctionAnalysisAgent:
+  system_prompt: ""
   system_prompt_path: "prompt/FunctionAnalysisAgent.md"
   llm:
     model_name: deepseek-reasoner
+    temperature: 0
     api_key: "YOUR_API_KEY_HERE"
+    base_url: "https://api.deepseek.com/chat/completions"
+    extra_body: {}
+    max_retries: 3
+    timeout: 120
+    max_completion_tokens: 32768
+    max_input_tokens: 131072
+  rate_limit:
+    requests_per_second: 10
+    check_every_n_seconds: 0.1
+    max_bucket_size: 10
+
+MalwareAnalysisAgent:
+  system_prompt: ""
+  system_prompt_path: "prompt/MalwareAnalysisAgent.md"
+  llm:
+    model_name: deepseek-reasoner
+    temperature: 0
+    api_key: "YOUR_API_KEY_HERE"
+    base_url: "https://api.deepseek.com/chat/completions"
+    extra_body: {}
+    max_retries: 3
+    timeout: 600
+    max_completion_tokens: 32768
+    max_input_tokens: 131072
+  rate_limit:
+    requests_per_second: 10
+    check_every_n_seconds: 0.1
+    max_bucket_size: 10
+
 ```
 
-提示词会在后端/worker 启动时从 `system_prompt_path` 读取；修改 prompt 后需要重启后端/worker 生效。
+提示：修改 prompt 或 config 后，需要重启 backend/worker 生效。
 
-## 🚦 快速启动
-推荐优先使用 docker-compose 启动全套服务，其次再用"纯本地三进程"调试。
+## 🚀 快速启动
 
-### 方式 A（推荐）：Docker Compose
-```bash
-git clone https://github.com/MICHAEL-888/Phantom_TrojanWalker.git
-cd Phantom_TrojanWalker/agents
-mv config.yaml.example config.yaml
-# 编辑 config.yaml，填入 Base URL 与 LLM Key
-```
+### 方式 A：Docker Compose（推荐）
+
 ```bash
 docker compose up --build
 ```
-默认端口：Ghidra `127.0.0.1:8000`、Backend `127.0.0.1:8001`（API 前缀 `/api`）、Frontend `127.0.0.1:8080`。
+
+默认端口：Ghidra `127.0.0.1:8000`、Backend `127.0.0.1:8001`（`/api`）、Frontend `127.0.0.1:8080`、Ghidra MCP `127.0.0.1:9000`。
 
 ### 方式 B：纯本地（开发调试）
-按顺序启动以下三个服务：
 
-### Step 1: 启动 Ghidra 底层引擎
+按顺序启动：
+
 ```bash
-# 需要设置 GHIDRA_INSTALL_DIR 环境变量
+# Step 1: Ghidra 引擎
 export GHIDRA_INSTALL_DIR=/path/to/ghidra
 python module/ghidra_pipe/main.py
-# 默认监听: http://127.0.0.1:8000
-```
 
-### Step 2: 启动 分析后台 (Task Logic)
-```bash
+# Step 2: Backend + Worker
 python backend/main.py
-# 默认监听: http://127.0.0.1:8001
-```
 
-### Step 3: 启动 前端看板
-```bash
+# Step 3: Frontend
 cd frontend
 npm install
 npm run dev
-# 默认访问: http://localhost:5173
 ```
 
-后端核心 API：`POST /api/analyze`（上传并排队）+ `GET /api/tasks/{task_id}`（轮询结果）。
+访问：`http://localhost:5173`
 
-## 📂 目录结构
+## 🔧 常用环境变量
 
-```text
-├── agents/             # AI 智能体核心 (Coordinator, Tools, Prompts)
-├── backend/            # 业务持久化后端 (FastAPI, SQLite, Worker)
-├── frontend/           # React 前端看板
-├── module/ghidra_pipe/ # Ghidra API 封装层 (底层引擎)
-├── data/               # 文件上传及任务数据存储
-├── tests/              # pytest 测试用例
-└── docker-compose.yml  # 一键启动（推荐）
-```
+- `PTW_GHIDRA_BASE_URL`：覆盖 `agents/config.yaml` 中的 `plugins.ghidra.base_url`
+- `PTW_MCP_BASE_URL`：覆盖 MCP 地址
+- `PTW_MAX_UPLOAD_BYTES`：最大上传大小（默认 200MB）
+- `PTW_CORS_ORIGINS`：后端允许的跨域来源（逗号分隔）
+- `BACKEND_HOST` / `BACKEND_PORT`：后端监听地址与端口
+- `GHIDRA_INSTALL_DIR`：本地 Ghidra 安装目录
 
-## 🧪 测试
+## 🧷 常见问题
 
-运行测试（需要 Ghidra 环境）：
-```bash
-# 设置 Ghidra 安装目录
-export GHIDRA_INSTALL_DIR=/path/to/ghidra
-
-# 运行所有测试
-pytest tests/ -v
-
-# 运行 Ghidra 模块测试
-pytest tests/test_ghidra_pipe.py -v -s
-```
-
-如果没有 Ghidra 环境，相关测试会自动跳过。
+- **前端一直 pending**：这是正常队列等待，系统只允许单并发分析。
+- **LLM 解析失败**：LLM 必须返回 JSON object，确认模型/网关支持 `response_format`。
+- **Ghidra 无法启动**：检查 `GHIDRA_INSTALL_DIR` 与 JDK 版本。
 
 ## ⚖️ 法律声明
 
-本项目仅供安全研究与教学使用。用户在使用本工具进行法律允许范围外的操作时，由此产生的法律后果由使用者本人承担。
+本项目仅供安全研究与教学使用。使用者需确保在法律允许范围内使用该工具。
+
+---
+
+## 以上内容为人机生成，以下内容才是真人写的
+
+我自己搭了一个站点大家可以测试：https://phantom.num123.top/
+
+不要传加壳程序，不要传msi，不要传无关文件，更不要传函数特别多的程序（api费用会把我搞破产！！！）
+
+机器性能很弱，ghidra容器只分配了1个cpu核心，所以不要传很复杂的程序分析
+
+这是一个示例：478eb07375f1513160ad5e80dff2c03f93707d414c4e13e1d7826067b8c9cf3c
+
+<img width="1839" height="479" alt="图片" src="https://github.com/user-attachments/assets/fe0542de-0e4d-41a4-b6bc-536b5f6552d5" />
+<img width="1815" height="820" alt="图片" src="https://github.com/user-attachments/assets/cac134fe-a3d8-47d9-86e6-efe4274d44b0" />
+<img width="1760" height="864" alt="图片" src="https://github.com/user-attachments/assets/76877adf-b3bc-4048-85dd-3e781d60a7dc" />
+<img width="1754" height="392" alt="图片" src="https://github.com/user-attachments/assets/39972db0-432f-4fcf-969b-d87cb7ad6f14" />
+<img width="1729" height="799" alt="图片" src="https://github.com/user-attachments/assets/a0ea171e-8f36-40e4-ba07-d7c3e0efa73f" />
+
+
+最好还是自己部署，部署很方便，首先把config.yaml当中的设置填好，然后直接docker compose就行
+
+ghidra会吃1GB左右的内存，部署的机器配置不要太低了，最好限制一下ghidra容器的CPU核心数量，否则可能会把整个机器卡死
+
+仓库和代码都有一点乱，但是配套了copilot-instructions.md和AGENTS.md，有代码相关的问题可以直接问copilot
+
+FunctionAnalysisAgent可以使用小模型，我用的mistral-medium + nemotron-3-nano-30b-a3b + LongCat-Flash-Lite，因为它们是免费的
+
+不要使用太小的模型例如qwen3-4b-thinking-2507，知识太少只能理解代码的功能，不能做att&ck矩阵匹配
+
+MalwareAnalysisAgent尽可能使用先进的模型，该agent涉及到工具调用，我使用LongCat-Flash-Thinking-2601，因为它每天送我500万tokens，并且这个模型支持一边思考一边调工具
+
+项目还有很多优化空间，特别是提示词这块，MalwareAnalysisAgent调用工具很不积极
+
+有问题可以提issue，有bug问copilot吧，你给我说了bug我也只会问copilot
 
 ## 🔗 参考资料
 

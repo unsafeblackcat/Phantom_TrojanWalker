@@ -205,6 +205,7 @@ npm run dev
 - `PTW_CORS_ORIGINS`：后端允许的跨域来源（逗号分隔）
 - `BACKEND_HOST` / `BACKEND_PORT`：后端监听地址与端口
 - `GHIDRA_INSTALL_DIR`：本地 Ghidra 安装目录
+- `PHANTOM_DEBUG`：设为 `true` 后启用 `MalwareAnalysisAgent` 抓包式调试日志（完整原始请求/响应会写入 `data/logs/malware_agent_debug.log`）
 
 ## 🧷 常见问题
 

@@ -1,6 +1,7 @@
 import json
 import logging
 import asyncio
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_openai import ChatOpenAI
@@ -15,6 +16,52 @@ logger = logging.getLogger(__name__)
 # Keep retries controlled by agent-level loops only.
 # This prevents N (agent) * M (SDK) retry multiplication.
 SDK_MAX_RETRIES = 0
+DEBUG_LOGGER_NAME = "phantom.malware_debug"
+DEBUG_ENV_KEY = "PHANTOM_DEBUG"
+
+
+def _is_phantom_debug_enabled() -> bool:
+    value = os.getenv(DEBUG_ENV_KEY, "")
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _resolve_debug_log_path() -> str:
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(project_root, "data", "logs", "malware_agent_debug.log")
+
+
+def _json_default_serializer(value: Any) -> Any:
+    if hasattr(value, "model_dump"):
+        return value.model_dump()
+    if hasattr(value, "dict"):
+        return value.dict()
+    if isinstance(value, set):
+        return list(value)
+    if hasattr(value, "__dict__"):
+        return vars(value)
+    return str(value)
+
+
+def _to_pretty_json(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, indent=2, default=_json_default_serializer)
+    except Exception:
+        return str(value)
+
+
+def _get_debug_logger() -> logging.Logger:
+    debug_logger = logging.getLogger(DEBUG_LOGGER_NAME)
+    if debug_logger.handlers:
+        return debug_logger
+
+    debug_log_path = _resolve_debug_log_path()
+    os.makedirs(os.path.dirname(debug_log_path), exist_ok=True)
+    handler = logging.FileHandler(debug_log_path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    debug_logger.addHandler(handler)
+    debug_logger.setLevel(logging.INFO)
+    debug_logger.propagate = False
+    return debug_logger
 
 
 def _log_exception_group(prefix: str, exc: Exception) -> None:
@@ -259,6 +306,13 @@ class MalwareAnalysisAgent:
         self.summary_llm = _create_summary_llm("MalwareAnalysisAgentSummary", self.agent_config)
         self.mcp_base_url = self._resolve_mcp_base_url()
         self._json_retry_attempts = self._resolve_json_retry_attempts()
+        self._packet_debug_enabled = _is_phantom_debug_enabled()
+        self._packet_logger = _get_debug_logger() if self._packet_debug_enabled else None
+
+    def _packet_log(self, phase: str, payload: Dict[str, Any]) -> None:
+        if not self._packet_logger:
+            return
+        self._packet_logger.info("[%s] %s", phase, _to_pretty_json(payload))
 
     def _resolve_json_retry_attempts(self) -> int:
         # Prefer configured max_retries; ensure at least 1 attempt.
@@ -381,6 +435,18 @@ class MalwareAnalysisAgent:
 
         last_content = ""
         for attempt in range(1, self._json_retry_attempts + 1):
+            self._packet_log(
+                "malware_agent.request",
+                {
+                    "attempt": attempt,
+                    "max_attempts": self._json_retry_attempts,
+                    "messages": messages,
+                    "tool_count": len(tools),
+                    "max_tool_calls": max_tool_calls,
+                    "max_agent_steps": max_agent_steps,
+                    "max_tool_result_chars": max_tool_result_chars,
+                },
+            )
             try:
                 content = await self._invoke_with_summarization_middleware(
                     messages,
@@ -391,6 +457,14 @@ class MalwareAnalysisAgent:
                 )
             except Exception as exc:
                 last_content = str(exc)
+                self._packet_log(
+                    "malware_agent.exception",
+                    {
+                        "attempt": attempt,
+                        "exception_type": type(exc).__name__,
+                        "exception": str(exc),
+                    },
+                )
                 logger.warning(
                     "MalwareAnalysisAgent LLM call failed (attempt %d/%d): %s",
                     attempt,
@@ -399,6 +473,13 @@ class MalwareAnalysisAgent:
                 )
             else:
                 last_content = content
+                self._packet_log(
+                    "malware_agent.response",
+                    {
+                        "attempt": attempt,
+                        "raw_response": content,
+                    },
+                )
                 parsed = _json_or_error_payload("MalwareAnalysisAgent", content)
                 if "error" not in parsed:
                     return parsed
@@ -463,6 +544,20 @@ class MalwareAnalysisAgent:
                     return handler(request.override(tools=[]))
                 return handler(request)
 
+            async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+                call_count, total_chars = self._extract_usage(getattr(request, "messages", []))
+                budget_exceeded = call_count >= self._max_calls or total_chars >= self._max_chars
+                if budget_exceeded:
+                    logger.info(
+                        "MCP tool budget reached, disabling further tool calls: calls=%d/%d chars=%d/%d",
+                        call_count,
+                        self._max_calls,
+                        total_chars,
+                        self._max_chars,
+                    )
+                    return await handler(request.override(tools=[]))
+                return await handler(request)
+
         max_input_tokens = getattr(self.agent_config.llm, "max_input_tokens", None)
         trigger_tokens = 100000
         if isinstance(max_input_tokens, int) and max_input_tokens > 0:
@@ -484,6 +579,21 @@ class MalwareAnalysisAgent:
             tools=tools,
             middleware=[budget_middleware, middleware],
         )
+        tool_names: List[str] = []
+        for tool in tools:
+            tool_name = getattr(tool, "name", None)
+            if tool_name:
+                tool_names.append(str(tool_name))
+        self._packet_log(
+            "malware_agent.invoke.request",
+            {
+                "messages": messages,
+                "tool_names": tool_names,
+                "max_agent_steps": max_agent_steps,
+                "max_tool_calls": max_tool_calls,
+                "max_tool_result_chars": max_tool_result_chars,
+            },
+        )
         if hasattr(agent, "ainvoke"):
             result = await agent.ainvoke(
                 {"messages": messages},
@@ -494,6 +604,13 @@ class MalwareAnalysisAgent:
                 {"messages": messages},
                 config={"recursion_limit": max_agent_steps},
             )
+
+        self._packet_log(
+            "malware_agent.invoke.response",
+            {
+                "raw_result": result,
+            },
+        )
 
         if isinstance(result, dict) and "output" in result:
             return _response_to_text(result["output"])

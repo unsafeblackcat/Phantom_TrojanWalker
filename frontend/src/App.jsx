@@ -1,246 +1,91 @@
-import React, { useEffect, useState } from 'react';
-import axios from 'axios';
-import { AlertCircle, Loader2, Search, Upload } from 'lucide-react';
-import ReportView from './components/ReportView';
-
-// IMPORTANT: To ensure the browser never talks to backend directly,
-// the frontend always calls a same-origin relative API path.
-// In dev, Vite's proxy handles forwarding. In production, the frontend container
-// runs a small Node gateway that proxies /api/* to the backend.
-const API_BASE = "/api";
-const STATUS = {
-  idle: "idle",
-  uploading: "uploading",
-  pending: "pending",
-  processing: "processing",
-  completed: "completed",
-  failed: "failed",
-};
-const POLL_INTERVAL_MS = 2000;
-
-async function sha256HexFromFile(file) {
-  if (!globalThis.crypto?.subtle) {
-    throw new Error('WebCrypto unavailable (needs secure context/HTTPS)');
-  }
-  const buffer = await file.arrayBuffer();
-  const digest = await globalThis.crypto.subtle.digest('SHA-256', buffer);
-  const bytes = new Uint8Array(digest);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
-// Refactor: keep form-data creation in one place for clarity.
-function buildUploadFormData(selectedFile, sha256) {
-  const formData = new FormData();
-  formData.append("file", selectedFile);
-  if (sha256) {
-    formData.append('sha256', sha256);
-  }
-  return formData;
-}
-
-// Refactor: centralize in-flight state checks to avoid repeated conditions.
-function isInProgress(status) {
-  return status === STATUS.pending || status === STATUS.processing;
-}
+import React, { useState, useEffect } from 'react';
+import { Routes, Route, Link, useLocation } from 'react-router-dom';
+import { Home as HomeIcon, Clock } from 'lucide-react';
+import Home from './pages/Home';
+import History from './pages/History';
+import TaskDetail from './pages/TaskDetail';
 
 function App() {
-  const [selectedFile, setSelectedFile] = useState(null);
-  const [activeTaskId, setActiveTaskId] = useState(null);
-  const [status, setStatus] = useState(STATUS.idle); // idle, uploading, pending, processing, completed, failed
-  const [report, setReport] = useState(null);
-  const [errorMessage, setErrorMessage] = useState(null);
-  const [searchHash, setSearchHash] = useState("");
+  const location = useLocation();
+  const [isScrolled, setIsScrolled] = useState(false);
+  const [isVisible, setIsVisible] = useState(true);
+  const [lastScrollY, setLastScrollY] = useState(0);
 
-  const handleFileChange = (event) => {
-    const nextFile = event.target.files?.[0] || null;
-    setSelectedFile(nextFile);
-  };
-
-  // Refactor: consolidate task state updates to avoid duplication.
-  const applyTaskState = (taskData) => {
-    if (!taskData) return;
-    setActiveTaskId(taskData.task_id);
-    setStatus(taskData.status);
-
-    if (taskData.status === STATUS.completed) {
-      setReport(taskData);
-      return;
-    }
-    if (taskData.status === STATUS.failed) {
-      setErrorMessage(taskData.error || "Analysis failed.");
-    }
-  };
-
-  const uploadFile = async () => {
-    if (!selectedFile) return;
-    setStatus(STATUS.uploading);
-    setReport(null);
-    setErrorMessage(null);
-
-    let sha256 = null;
-    try {
-      sha256 = await sha256HexFromFile(selectedFile);
-      // Pre-dedupe: if task exists for this sha256, reuse it and avoid uploading.
-      const existing = await axios.get(`${API_BASE}/result/${sha256}`);
-      const existingStatus = existing?.data?.status;
-      // Only reuse successful or in-flight tasks. If the last attempt failed,
-      // allow the user to re-upload and trigger a fresh analysis.
-      if (existingStatus && existingStatus !== STATUS.failed) {
-        applyTaskState(existing.data);
-        return;
-      }
-    } catch (err) {
-      // 404 means no existing task -> proceed to upload.
-      // Any other error (e.g. WebCrypto not available) also falls back to upload.
-      if (err?.response?.status && err.response.status !== 404) {
-        console.warn('Pre-dedupe lookup failed, falling back to upload:', err);
-      }
-      if (!sha256 && !globalThis.crypto?.subtle) {
-        console.warn('WebCrypto unavailable; uploading without client-side sha256');
-      }
-    }
-
-    const formData = buildUploadFormData(selectedFile, sha256);
-
-    try {
-      const res = await axios.post(`${API_BASE}/analyze`, formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
-      });
-      setActiveTaskId(res.data.task_id);
-      setStatus(res.data.status); 
-      
-      if (res.data.status === STATUS.completed) {
-        fetchStatus(res.data.task_id);
-      }
-    } catch (err) {
-      console.error(err);
-      setErrorMessage("Upload failed.");
-      setStatus(STATUS.failed);
-    }
-  };
-
-  const fetchStatus = async (taskId) => {
-    try {
-      const res = await axios.get(`${API_BASE}/tasks/${taskId}`);
-      applyTaskState(res.data);
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
-  const searchByHash = async () => {
-    if (!searchHash) return;
-    try {
-      setStatus(STATUS.processing);
-      const res = await axios.get(`${API_BASE}/result/${searchHash}`);
-      applyTaskState(res.data);
-    } catch (err) {
-      setErrorMessage("Analysis not found for this hash.");
-      setStatus(STATUS.failed);
-    }
-  };
-
-  // Polling
   useEffect(() => {
-    let interval;
-    if (activeTaskId && isInProgress(status)) {
-      interval = setInterval(() => {
-        fetchStatus(activeTaskId);
-      }, POLL_INTERVAL_MS);
-    }
-    return () => clearInterval(interval);
-  }, [activeTaskId, status]);
+    const handleScroll = () => {
+      const currentScrollY = window.scrollY;
+      
+      // Shrink navbar if scrolled past 20px
+      setIsScrolled(currentScrollY > 20);
+      
+      // Hide navbar if scrolling down, show if scrolling up
+      if (currentScrollY > lastScrollY && currentScrollY > 100) {
+        setIsVisible(false);
+      } else {
+        setIsVisible(true);
+      }
+      
+      setLastScrollY(currentScrollY);
+    };
+
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, [lastScrollY]);
+
+  const isActive = (path) => {
+    return location.pathname === path;
+  };
 
   return (
-    <div className="min-h-screen p-8 max-w-7xl mx-auto">
-      <header className="mb-12 text-center">
-        <h1 className="text-5xl font-extrabold mb-4 bg-clip-text text-transparent bg-gradient-to-r from-emerald-400 to-cyan-500">
-          Phantom TrojanWalker
-        </h1>
-        <p className="text-xl text-slate-400">Next-Gen AI Malware Analysis Framework</p>
-      </header>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-8">
-        {/* Upload Card */}
-        <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-xl lg:col-span-2">
-          <h2 className="text-2xl font-bold mb-6 flex items-center">
-            <Upload className="mr-2 text-emerald-400" /> Upload Binary
-          </h2>
-          <div className="border-2 border-dashed border-slate-600 rounded-lg p-12 text-center hover:border-emerald-500 transition-colors cursor-pointer relative">
-            <input 
-              type="file" 
-              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-              onChange={handleFileChange}
-            />
-            {selectedFile ? (
-              <div className="text-emerald-400 font-semibold">{selectedFile.name}</div>
-            ) : (
-              <div className="text-slate-400">
-                <p>Drag & drop or click to select</p>
-                <p className="text-sm mt-2 opacity-60">Supports PE, ELF, Mach-O</p>
-              </div>
-            )}
+    <div className="min-h-screen bg-slate-950 text-slate-50 font-sans selection:bg-cyan-500/30">
+      {/* Floating Navbar */}
+      <nav className={`fixed left-0 right-0 z-50 bg-slate-900/90 backdrop-blur-md border-b border-slate-800 shadow-2xl flex items-center justify-between transition-all duration-300 ${
+        isVisible ? 'translate-y-0' : '-translate-y-full'
+      } ${
+        isScrolled ? 'py-2' : 'py-4'
+      }`}>
+        <div className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 flex items-center justify-between">
+          <div className="flex items-center space-x-3">
+            <span className="text-xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-emerald-400 to-cyan-500">
+              Phantom TrojanWalker
+            </span>
           </div>
-          <button 
-            onClick={uploadFile}
-            disabled={!selectedFile || status === STATUS.uploading}
-            className="mt-4 w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 rounded-lg transition-all disabled:opacity-50"
-          >
-            {status === STATUS.uploading ? 'Uploading...' : 'Start Analysis'}
-          </button>
-        </div>
-
-        {/* Search Card */}
-        <div className="bg-slate-800 p-6 rounded-xl border border-slate-700 shadow-xl">
-          <h2 className="text-2xl font-bold mb-6 flex items-center">
-            <Search className="mr-2 text-cyan-400" /> Search History
-          </h2>
-          <div className="space-y-4">
-             <input 
-              type="text" 
-              placeholder="Enter SHA256 Hash"
-              className="w-full bg-slate-900 border border-slate-600 rounded p-3 text-slate-100 focus:outline-none focus:border-cyan-500"
-              value={searchHash}
-              onChange={(e) => setSearchHash(e.target.value)}
-            />
-            <button 
-              onClick={searchByHash}
-              className="w-full bg-cyan-600 hover:bg-cyan-700 text-white font-bold py-3 rounded-lg transition-all"
+          
+          <div className="flex items-center space-x-1 bg-slate-800/50 p-1 rounded-xl border border-slate-700/50">
+            <Link 
+              to="/" 
+              className={`flex items-center px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 cursor-pointer ${
+                isActive('/') 
+                  ? 'bg-slate-700 text-white shadow-md' 
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+              }`}
             >
-              Search
-            </button>
+              <HomeIcon className="w-4 h-4 mr-2" />
+              Home
+            </Link>
+            <Link 
+              to="/history" 
+              className={`flex items-center px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 cursor-pointer ${
+                isActive('/history') 
+                  ? 'bg-slate-700 text-white shadow-md' 
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+              }`}
+            >
+              <Clock className="w-4 h-4 mr-2" />
+              History
+            </Link>
           </div>
         </div>
-      </div>
+      </nav>
 
-      {/* Status & Results */}
-      {status !== STATUS.idle && (
-        <div className="animate-in fade-in duration-500">
-           {isInProgress(status) ? (
-             <div className="bg-slate-800 p-8 rounded-xl border border-slate-700 text-center">
-               <Loader2 className="animate-spin w-12 h-12 mx-auto text-cyan-400 mb-4" />
-               <h3 className="text-2xl font-bold text-white">Analysis in Progress...</h3>
-               <p className="text-slate-400 mt-2">
-                 AI Agents are auditing the binary. This may take a few minutes.
-                 <br/>
-                 Current State: <span className="text-cyan-400 uppercase">{status}</span>
-               </p>
-             </div>
-           ) : null}
-
-           {status === STATUS.failed && (
-             <div className="bg-red-900/20 p-8 rounded-xl border border-red-800 text-center">
-               <AlertCircle className="w-12 h-12 mx-auto text-red-500 mb-4" />
-               <h3 className="text-2xl font-bold text-red-400">Analysis Failed</h3>
-               <p className="text-red-200 mt-2">{errorMessage}</p>
-             </div>
-           )}
-
-           {status === STATUS.completed && report && (
-             <ReportView report={report} />
-           )}
-        </div>
-      )}
+      {/* Main Content Area with padding for fixed navbar */}
+      <main className="pt-28 pb-12 px-4 sm:px-6 lg:px-8">
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/history" element={<History />} />
+          <Route path="/task/:taskId" element={<TaskDetail />} />
+        </Routes>
+      </main>
     </div>
   );
 }

@@ -206,6 +206,29 @@ npm run dev
 - `BACKEND_HOST` / `BACKEND_PORT`：后端监听地址与端口
 - `GHIDRA_INSTALL_DIR`：本地 Ghidra 安装目录
 - `PHANTOM_DEBUG`：设为 `true` 后启用 `MalwareAnalysisAgent` 抓包式调试日志（完整原始请求/响应会写入 `data/logs/malware_agent_debug.log`）
+- `LANGFUSE_SECRET_KEY` / `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_BASE_URL`：启用 Langfuse 可观测（LangChain 回调模式）
+
+### Langfuse 可观测（LangChain）
+
+按 Langfuse 官方 LangChain 集成方式，本项目会在 LLM 调用时自动挂载 `langfuse.langchain.CallbackHandler`。
+
+在项目根目录创建 `.env`（或导出同名环境变量）：
+
+```bash
+LANGFUSE_SECRET_KEY="sk-lf-..."
+LANGFUSE_PUBLIC_KEY="pk-lf-..."
+LANGFUSE_BASE_URL="http://localhost:3000"
+```
+
+Docker 方式重启：
+
+```bash
+docker compose up --build -d
+```
+
+说明：
+- 未设置上述变量时，会自动跳过 Langfuse（不影响原有分析流程）。
+- 仅需配置 backend/worker 进程环境变量，frontend 与 ghidra 服务无需配置。
 
 ## 🧷 常见问题
 

@@ -18,6 +18,11 @@ logger = logging.getLogger(__name__)
 SDK_MAX_RETRIES = 0
 DEBUG_LOGGER_NAME = "phantom.malware_debug"
 DEBUG_ENV_KEY = "PHANTOM_DEBUG"
+LANGFUSE_REQUIRED_ENV_KEYS = (
+    "LANGFUSE_SECRET_KEY",
+    "LANGFUSE_PUBLIC_KEY",
+    "LANGFUSE_BASE_URL",
+)
 
 
 def _is_phantom_debug_enabled() -> bool:
@@ -75,6 +80,53 @@ def _log_exception_group(prefix: str, exc: Exception) -> None:
 def _response_to_text(resp: Any) -> str:
     content = getattr(resp, "content", None)
     return str(content) if content is not None else str(resp)
+
+
+def _create_langfuse_callback_handler() -> Optional[Any]:
+    missing = [k for k in LANGFUSE_REQUIRED_ENV_KEYS if not os.getenv(k, "").strip()]
+    if missing:
+        logger.info("Langfuse tracing disabled: missing envs: %s", ", ".join(missing))
+        return None
+
+    callback_cls = None
+    try:
+        from langfuse.langchain import CallbackHandler as LangfuseCallbackHandler
+
+        callback_cls = LangfuseCallbackHandler
+    except Exception:
+        try:
+            from langfuse.callback import CallbackHandler as LangfuseCallbackHandler
+
+            callback_cls = LangfuseCallbackHandler
+        except Exception as exc:
+            logger.warning("Langfuse callback import failed: %s", exc)
+            return None
+
+    try:
+        handler = callback_cls()
+    except Exception as exc:
+        logger.warning("Langfuse callback initialization failed: %s", exc)
+        return None
+
+    logger.info("Langfuse tracing enabled for agent calls.")
+    return handler
+
+
+def _build_invoke_config(
+    callback_handler: Optional[Any],
+    run_name: str,
+    tags: Optional[List[str]] = None,
+) -> Optional[Dict[str, Any]]:
+    if not callback_handler:
+        return None
+
+    config: Dict[str, Any] = {
+        "callbacks": [callback_handler],
+        "run_name": run_name,
+    }
+    if tags:
+        config["tags"] = tags
+    return config
 
 
 def _json_or_error_payload(agent_name: str, content: str) -> Dict[str, Any]:
@@ -173,8 +225,16 @@ class FunctionAnalysisAgent:
         self.config = load_config()
         self.agent_config = self.config.FunctionAnalysisAgent
         self.llm = _create_llm("FunctionAnalysisAgent", self.agent_config)
+        self._langfuse_callback = _create_langfuse_callback_handler()
         # Retry attempts for JSON parse failures (fallback if not configured)
         self._json_retry_attempts = self._resolve_json_retry_attempts()
+
+    def _invoke_config(self, run_name: str) -> Optional[Dict[str, Any]]:
+        return _build_invoke_config(
+            callback_handler=self._langfuse_callback,
+            run_name=run_name,
+            tags=["FunctionAnalysisAgent"],
+        )
 
     def _resolve_json_retry_attempts(self) -> int:
         # Prefer configured max_retries; ensure at least 1 attempt.
@@ -201,7 +261,10 @@ class FunctionAnalysisAgent:
         last_content = ""
         for attempt in range(1, self._json_retry_attempts + 1):
             try:
-                response = await self.llm.ainvoke(messages)
+                response = await self.llm.ainvoke(
+                    messages,
+                    config=self._invoke_config("FunctionAnalysisAgent.analyze"),
+                )
             except Exception as exc:
                 last_content = str(exc)
                 logger.warning(
@@ -261,7 +324,12 @@ class FunctionAnalysisAgent:
             last_content = ""
             for attempt in range(1, self._json_retry_attempts + 1):
                 try:
-                    response = await self.llm.ainvoke(messages)
+                    response = await self.llm.ainvoke(
+                        messages,
+                        config=self._invoke_config(
+                            f"FunctionAnalysisAgent.analyze_decompiled_batch.{name}"
+                        ),
+                    )
                 except Exception as exc:
                     last_content = str(exc)
                     logger.warning(
@@ -303,11 +371,20 @@ class MalwareAnalysisAgent:
         self.config = load_config()
         self.agent_config = self.config.MalwareAnalysisAgent
         self.llm = _create_llm("MalwareAnalysisAgent", self.agent_config)
+        self.tool_llm = _create_summary_llm("MalwareAnalysisAgentToolMode", self.agent_config)
         self.summary_llm = _create_summary_llm("MalwareAnalysisAgentSummary", self.agent_config)
+        self._langfuse_callback = _create_langfuse_callback_handler()
         self.mcp_base_url = self._resolve_mcp_base_url()
         self._json_retry_attempts = self._resolve_json_retry_attempts()
         self._packet_debug_enabled = _is_phantom_debug_enabled()
         self._packet_logger = _get_debug_logger() if self._packet_debug_enabled else None
+
+    def _invoke_config(self, run_name: str) -> Optional[Dict[str, Any]]:
+        return _build_invoke_config(
+            callback_handler=self._langfuse_callback,
+            run_name=run_name,
+            tags=["MalwareAnalysisAgent"],
+        )
 
     def _packet_log(self, phase: str, payload: Dict[str, Any]) -> None:
         if not self._packet_logger:
@@ -423,12 +500,7 @@ class MalwareAnalysisAgent:
         messages = [
             {
                 "role": "system",
-                "content": (
-                    f"{self.agent_config.system_prompt}\n\n"
-                    f"工具调用预算约束（必须遵守）：最多调用 {max_tool_calls} 次工具；"
-                    f"工具返回累计总长度上限为 {max_tool_result_chars} 字符；"
-                    "达到任一预算后必须停止继续调用工具，并基于现有证据完成最终 JSON 报告。"
-                ),
+                "content": self.agent_config.system_prompt,
             },
             {"role": "user", "content": json.dumps(context, ensure_ascii=False, indent=2)},
         ]
@@ -574,8 +646,9 @@ class MalwareAnalysisAgent:
             max_calls=max_tool_calls,
             max_chars=max_tool_result_chars,
         )
+        model_for_agent = self.tool_llm if tools else self.llm
         agent = create_agent(
-            model=self.llm,
+            model=model_for_agent,
             tools=tools,
             middleware=[budget_middleware, middleware],
         )
@@ -595,14 +668,26 @@ class MalwareAnalysisAgent:
             },
         )
         if hasattr(agent, "ainvoke"):
+            invoke_config: Dict[str, Any] = {
+                "recursion_limit": max_agent_steps,
+            }
+            base_config = self._invoke_config("MalwareAnalysisAgent.analyze")
+            if base_config:
+                invoke_config.update(base_config)
             result = await agent.ainvoke(
                 {"messages": messages},
-                config={"recursion_limit": max_agent_steps},
+                config=invoke_config,
             )
         else:
+            invoke_config = {
+                "recursion_limit": max_agent_steps,
+            }
+            base_config = self._invoke_config("MalwareAnalysisAgent.analyze")
+            if base_config:
+                invoke_config.update(base_config)
             result = agent.invoke(
                 {"messages": messages},
-                config={"recursion_limit": max_agent_steps},
+                config=invoke_config,
             )
 
         self._packet_log(

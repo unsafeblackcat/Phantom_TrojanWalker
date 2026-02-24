@@ -12,6 +12,10 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 
 logger = logging.getLogger(__name__)
 
+# Keep retries controlled by agent-level loops only.
+# This prevents N (agent) * M (SDK) retry multiplication.
+SDK_MAX_RETRIES = 0
+
 
 def _log_exception_group(prefix: str, exc: Exception) -> None:
     logger.exception("%s: %s", prefix, exc)
@@ -91,7 +95,8 @@ def _build_llm_params(
         "base_url": agent_cfg.llm.base_url,
         "model": agent_cfg.llm.model_name,
         "api_key": agent_cfg.llm.api_key,
-        "max_retries": agent_cfg.llm.max_retries,
+        # Disable SDK/internal retries; outer retry loop remains the single source of truth.
+        "max_retries": SDK_MAX_RETRIES,
         "timeout": agent_cfg.llm.timeout,
         "max_completion_tokens": agent_cfg.llm.max_completion_tokens,
         "rate_limiter": rate_limiter,

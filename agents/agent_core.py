@@ -1,7 +1,7 @@
 import json
 import logging
 import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_openai import ChatOpenAI
 from config_loader import load_config
@@ -277,35 +277,62 @@ class MalwareAnalysisAgent:
         base_url = getattr(mcp_cfg, "base_url", None)
         return str(base_url).rstrip("/") if base_url else None
 
-    async def _call_mcp_tool(self, tool: Any, args: Dict[str, Any]) -> Dict[str, Any]:
-        try:
-            if hasattr(tool, "ainvoke"):
-                result = await tool.ainvoke(args)
-            else:
-                result = tool.invoke(args)
-        except Exception as exc:
-            logger.warning("MCP tool call failed: %s", exc)
-            return {"error": str(exc)}
+    def _resolve_tool_budget(self) -> Tuple[bool, int, int, int]:
+        """Resolve MCP tool-calling budget from config.
 
-        if isinstance(result, dict):
-            return result
-        return {"data": result}
+        Returns:
+            (enabled, max_tool_calls, max_agent_steps, max_tool_result_chars)
+        """
+        budget_cfg = getattr(self.agent_config, "tool_budget", None)
+        enabled = True
+        max_tool_calls = 12
+        max_agent_steps = 30
+        max_tool_result_chars = 120000
 
-    async def _fetch_mcp_enrichment(self, analysis_results: list) -> List[Dict[str, Any]]:
-        targets = []
-        for item in analysis_results:
-            name = item.get("name") if isinstance(item, dict) else None
-            if name:
-                targets.append(str(name))
+        if budget_cfg is not None:
+            enabled_cfg = getattr(budget_cfg, "enabled", None)
+            calls_cfg = getattr(budget_cfg, "max_tool_calls", None)
+            steps_cfg = getattr(budget_cfg, "max_agent_steps", None)
+            chars_cfg = getattr(budget_cfg, "max_tool_result_chars", None)
 
-        if not targets or not self.mcp_base_url:
+            if isinstance(enabled_cfg, bool):
+                enabled = enabled_cfg
+            if isinstance(calls_cfg, int) and calls_cfg > 0:
+                max_tool_calls = calls_cfg
+            if isinstance(steps_cfg, int) and steps_cfg > 0:
+                max_agent_steps = steps_cfg
+            if isinstance(chars_cfg, int) and chars_cfg > 0:
+                max_tool_result_chars = chars_cfg
+
+        # Hard-cap graph recursion to indirectly bound tool calls.
+        # In ReAct-style loops, one tool call generally consumes ~2 steps (model + tool).
+        derived_step_cap = max(4, max_tool_calls * 2 + 2)
+        max_agent_steps = min(max_agent_steps, derived_step_cap)
+
+        return enabled, max_tool_calls, max_agent_steps, max_tool_result_chars
+
+    def _content_char_len(self, content: Any) -> int:
+        if content is None:
+            return 0
+        if isinstance(content, str):
+            return len(content)
+        if isinstance(content, (int, float, bool)):
+            return len(str(content))
+        if isinstance(content, list):
+            total = 0
+            for item in content:
+                if isinstance(item, dict):
+                    total += self._content_char_len(item.get("text") or item.get("content") or item)
+                else:
+                    total += self._content_char_len(item)
+            return total
+        if isinstance(content, dict):
+            return len(json.dumps(content, ensure_ascii=False))
+        return len(str(content))
+
+    async def _load_mcp_tools(self) -> List[Any]:
+        if not self.mcp_base_url:
             return []
-
-        logger.info(
-            "MCP enrichment enabled: base_url=%s targets=%d",
-            self.mcp_base_url,
-            len(targets),
-        )
 
         client = MultiServerMCPClient(
             {
@@ -320,66 +347,48 @@ class MalwareAnalysisAgent:
         except Exception as exc:
             _log_exception_group("MCP get_tools failed", exc)
             return []
-
-        tool_map = {tool.name: tool for tool in tools}
-        if not tool_map:
-            logger.warning("MCP returned no tools from server")
-
-        def _resolve_tool(name: str) -> Optional[Any]:
-            direct = tool_map.get(name)
-            if direct:
-                return direct
-            # Some MCP adapters prefix tool names with server identifiers.
-            for tool_name, tool in tool_map.items():
-                if tool_name.endswith(name):
-                    return tool
-            return None
-
-        decompile_tool = _resolve_tool("decompile_function")
-        xrefs_tool = _resolve_tool("function_xrefs")
-        if not decompile_tool or not xrefs_tool:
-            logger.warning("MCP tools missing from server: %s", list(tool_map.keys()))
-            return []
-
-        enrichment: List[Dict[str, Any]] = []
-        for name in targets:
-            decompiled = await self._call_mcp_tool(
-                decompile_tool,
-                args={"target": name},
-            )
-            xrefs = await self._call_mcp_tool(
-                xrefs_tool,
-                args={"target": name},
-            )
-            enrichment.append({
-                "name": name,
-                "decompile": decompiled,
-                "xrefs": xrefs,
-            })
-
-        return enrichment
+        return tools
 
     async def analyze(self, analysis_results: list, metadata: dict) -> dict:
         context = {
             "metadata": metadata,
             "function_analyses": analysis_results,
         }
-
-        if self.mcp_base_url:
-            try:
-                context["mcp_enrichment"] = await self._fetch_mcp_enrichment(analysis_results)
-            except Exception as exc:
-                logger.warning("MCP enrichment failed: %s", exc)
+        tool_enabled, max_tool_calls, max_agent_steps, max_tool_result_chars = self._resolve_tool_budget()
+        tools: List[Any] = []
+        if tool_enabled and self.mcp_base_url:
+            tools = await self._load_mcp_tools()
+            logger.info(
+                "MCP tool-calling mode enabled: tools=%d, max_tool_calls=%d, max_agent_steps=%d, max_tool_result_chars=%d",
+                len(tools),
+                max_tool_calls,
+                max_agent_steps,
+                max_tool_result_chars,
+            )
 
         messages = [
-            {"role": "system", "content": self.agent_config.system_prompt},
+            {
+                "role": "system",
+                "content": (
+                    f"{self.agent_config.system_prompt}\n\n"
+                    f"工具调用预算约束（必须遵守）：最多调用 {max_tool_calls} 次工具；"
+                    f"工具返回累计总长度上限为 {max_tool_result_chars} 字符；"
+                    "达到任一预算后必须停止继续调用工具，并基于现有证据完成最终 JSON 报告。"
+                ),
+            },
             {"role": "user", "content": json.dumps(context, ensure_ascii=False, indent=2)},
         ]
 
         last_content = ""
         for attempt in range(1, self._json_retry_attempts + 1):
             try:
-                content = await self._invoke_with_summarization_middleware(messages)
+                content = await self._invoke_with_summarization_middleware(
+                    messages,
+                    tools=tools,
+                    max_tool_calls=max_tool_calls,
+                    max_agent_steps=max_agent_steps,
+                    max_tool_result_chars=max_tool_result_chars,
+                )
             except Exception as exc:
                 last_content = str(exc)
                 logger.warning(
@@ -407,9 +416,52 @@ class MalwareAnalysisAgent:
             raw_response=last_content,
         )
 
-    async def _invoke_with_summarization_middleware(self, messages: List[Dict[str, str]]) -> str:
+    async def _invoke_with_summarization_middleware(
+        self,
+        messages: List[Dict[str, str]],
+        tools: List[Any],
+        max_tool_calls: int,
+        max_agent_steps: int,
+        max_tool_result_chars: int,
+    ) -> str:
         from langchain.agents import create_agent
-        from langchain.agents.middleware import SummarizationMiddleware
+        from langchain.agents.middleware import SummarizationMiddleware, AgentMiddleware
+
+        class ToolBudgetMiddleware(AgentMiddleware):
+            def __init__(
+                self,
+                outer: "MalwareAnalysisAgent",
+                max_calls: int,
+                max_chars: int,
+            ):
+                self._outer = outer
+                self._max_calls = max_calls
+                self._max_chars = max_chars
+
+            def _extract_usage(self, messages: List[Any]) -> Tuple[int, int]:
+                call_count = 0
+                total_chars = 0
+                for msg in messages or []:
+                    msg_type = getattr(msg, "type", None) or getattr(msg, "role", None)
+                    if msg_type != "tool":
+                        continue
+                    call_count += 1
+                    total_chars += self._outer._content_char_len(getattr(msg, "content", None))
+                return call_count, total_chars
+
+            def wrap_model_call(self, request: Any, handler: Any) -> Any:
+                call_count, total_chars = self._extract_usage(getattr(request, "messages", []))
+                budget_exceeded = call_count >= self._max_calls or total_chars >= self._max_chars
+                if budget_exceeded:
+                    logger.info(
+                        "MCP tool budget reached, disabling further tool calls: calls=%d/%d chars=%d/%d",
+                        call_count,
+                        self._max_calls,
+                        total_chars,
+                        self._max_chars,
+                    )
+                    return handler(request.override(tools=[]))
+                return handler(request)
 
         max_input_tokens = getattr(self.agent_config.llm, "max_input_tokens", None)
         trigger_tokens = 100000
@@ -422,15 +474,26 @@ class MalwareAnalysisAgent:
             keep=("messages", 10),
             summary_prompt="你是一位拥有深厚逆向工程背景的**资深恶意软件分析师**，以下是你之前的分析结果，由于上下文长度限制，需要对其进行总结以便继续分析：",
         )
+        budget_middleware = ToolBudgetMiddleware(
+            outer=self,
+            max_calls=max_tool_calls,
+            max_chars=max_tool_result_chars,
+        )
         agent = create_agent(
             model=self.llm,
-            tools=[],
-            middleware=[middleware],
+            tools=tools,
+            middleware=[budget_middleware, middleware],
         )
         if hasattr(agent, "ainvoke"):
-            result = await agent.ainvoke({"messages": messages})
+            result = await agent.ainvoke(
+                {"messages": messages},
+                config={"recursion_limit": max_agent_steps},
+            )
         else:
-            result = agent.invoke({"messages": messages})
+            result = agent.invoke(
+                {"messages": messages},
+                config={"recursion_limit": max_agent_steps},
+            )
 
         if isinstance(result, dict) and "output" in result:
             return _response_to_text(result["output"])

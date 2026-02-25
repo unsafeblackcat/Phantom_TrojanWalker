@@ -2,6 +2,7 @@ langchain
 langchain-openai
 langchain-deepseek
 langchain-mcp-adapters
+langfuse>=3.0.0
 pyyaml
 httpx
 pydantic

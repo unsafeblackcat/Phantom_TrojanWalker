@@ -46,3 +46,6 @@ dist/
 .npm
 
 data/
+
+.shared/ui-ux-pro-max
+.github/prompts/ui-ux-pro-max.prompt.md

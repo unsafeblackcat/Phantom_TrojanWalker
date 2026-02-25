@@ -39,6 +39,13 @@ class RateLimitConfig(BaseModel):
     check_every_n_seconds: float = 0.1
     max_bucket_size: float = 1.0
 
+
+class ToolBudgetConfig(BaseModel):
+    enabled: bool = True
+    max_tool_calls: int = 12
+    max_agent_steps: int = 30
+    max_tool_result_chars: int = 120000
+
 class PluginConfig(BaseModel):
     base_url: str
     endpoints: Dict[str, str] = Field(default_factory=dict)
@@ -48,6 +55,7 @@ class AgentConfig(BaseModel):
     system_prompt_path: Optional[str] = None
     llm: LLMConfig
     rate_limit: Optional[RateLimitConfig] = None
+    tool_budget: Optional[ToolBudgetConfig] = None
 
 class AppConfig(BaseModel):
     plugins: Dict[str, PluginConfig]

@@ -19,8 +19,9 @@ REQUEST_TIMEOUT = float(os.getenv("GHIDRA_MCP_TIMEOUT", "60"))
 
 # Allow local development origins by default; can be tightened via env var later
 ALLOW_ORIGINS = os.getenv("GHIDRA_MCP_ALLOW_ORIGINS", "*")
+STATELESS_HTTP = os.getenv("FASTMCP_STATELESS_HTTP", "true").strip().lower() in {"1", "true", "yes", "on"}
 
-mcp = FastMCP("Ghidra MCP", stateless_http=True)
+mcp = FastMCP("Ghidra MCP")
 
 
 def _request_json(method: str, path: str, params: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -77,7 +78,7 @@ def _build_http_app():
         )
     ]
 
-    return mcp.http_app(path="/mcp", middleware=middleware)
+    return mcp.http_app(path="/mcp", middleware=middleware, stateless_http=STATELESS_HTTP)
 
 
 if __name__ == "__main__":

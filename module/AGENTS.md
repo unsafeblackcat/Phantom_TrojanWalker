@@ -11,7 +11,7 @@
 ## 1. 模块边界与职责
 
 **本模块做什么**
-- 启动一个 HTTP 服务（默认 :8000），暴露 `upload/analyze/metadata/functions/strings/callgraph/xrefs/xrefs_batch/decompile_batch` 等接口。
+- 启动一个 HTTP 服务（默认 :8000），暴露 `upload/analyze/metadata/functions/exports/strings/callgraph/xrefs/xrefs_batch/decompile_batch` 等接口。
 - 管理 pyghidra 生命周期：初始化 JVM、打开二进制、执行分析、返回 JSON。
 - 通过 Ghidra DecompInterface 提供反编译能力。
 - 启动一个 MCP 服务（默认 :9000），提供只读工具 `decompile_function` 与 `function_xrefs`。
@@ -88,6 +88,10 @@
 ### 4.6 GET /strings
 返回：`GhidraAnalyzer.get_strings()` -> JSON 列表
 - 每个字符串：`{string, vaddr, section, type, length}`
+
+### 4.6.1 GET /exports
+返回：`GhidraAnalyzer.get_exports()` -> JSON 列表
+- 每个导出项固定为：`{name, offset}`
 
 ### 4.7 GET /callgraph
 返回：`GhidraAnalyzer.get_global_call_graph()`

@@ -146,6 +146,50 @@ class GhidraAnalyzer:
         except Exception as e:
             logger.error(f"Error getting functions: {e}")
             return []
+
+    def get_exports(self) -> List[Dict[str, Any]]:
+        """
+        Get export table entries from the binary.
+        Returns list of dicts with: name, offset
+        """
+        if not self._program:
+            return []
+
+        exports = []
+        seen = set()
+        try:
+            symbol_table = self._program.getSymbolTable()
+            func_manager = self._program.getFunctionManager()
+            entry_iter = symbol_table.getExternalEntryPointIterator()
+
+            for addr in entry_iter:
+                if not addr:
+                    continue
+
+                offset = addr.getOffset()
+                export_name = self._get_symbol_name_at(symbol_table, addr)
+
+                func = func_manager.getFunctionAt(addr)
+                if not func:
+                    func = func_manager.getFunctionContaining(addr)
+                function_name = func.getName() if func else None
+
+                dedupe_key = (offset, export_name, function_name)
+                if dedupe_key in seen:
+                    continue
+                seen.add(dedupe_key)
+
+                exports.append({
+                    "name": export_name,
+                    "offset": offset,
+                })
+
+            logger.info(f"Found {len(exports)} export entries")
+            return exports
+
+        except Exception as e:
+            logger.error(f"Error getting exports: {e}")
+            return []
     
     def get_strings(self) -> List[Dict[str, Any]]:
         """
@@ -721,6 +765,31 @@ class GhidraAnalyzer:
             if value is None:
                 return ""
             return str(value) or ""
+        except Exception:
+            return ""
+
+    def _get_symbol_name_at(self, symbol_table: Any, addr: Any) -> str:
+        """Get a best-effort symbol name at an address."""
+        try:
+            primary = symbol_table.getPrimarySymbol(addr)
+            if primary:
+                primary_name = primary.getName()
+                if primary_name:
+                    return str(primary_name)
+        except Exception:
+            pass
+
+        try:
+            symbols = symbol_table.getSymbols(addr)
+            for sym in symbols:
+                name = sym.getName()
+                if name:
+                    return str(name)
+        except Exception:
+            pass
+
+        try:
+            return str(addr)
         except Exception:
             return ""
 

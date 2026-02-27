@@ -167,6 +167,13 @@ def get_funcs():
         return require_analyzer().get_functions()
 
 
+@app.get("/exports")
+def get_exports():
+    """Get export table entries from the binary."""
+    with analyzer_lock:
+        return require_analyzer().get_exports()
+
+
 @app.get("/strings")
 def get_strs():
     """Get strings from the binary."""

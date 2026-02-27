@@ -111,6 +111,11 @@ class GhidraClient:
         res = await self._request("GET", "functions", timeout=60.0)
         return self._coerce_list(res)
 
+    async def get_exports(self) -> List[Dict[str, Any]]:
+        """Get export table entries."""
+        res = await self._request("GET", "exports", timeout=60.0)
+        return self._coerce_list(res)
+
     async def get_strings(self) -> List[str]:
         """Get strings from the binary."""
         res = await self._request("GET", "strings", timeout=60.0)

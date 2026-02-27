@@ -189,6 +189,9 @@ def _build_llm_params(
     if agent_cfg.llm.extra_body:
         model_kwargs["extra_body"] = agent_cfg.llm.extra_body
 
+    streaming = getattr(agent_cfg.llm, "streaming", None)
+    streaming_enabled = streaming if isinstance(streaming, bool) else True
+
     params = {
         "name": agent_name,
         "base_url": agent_cfg.llm.base_url,
@@ -197,6 +200,7 @@ def _build_llm_params(
         # Disable SDK/internal retries; outer retry loop remains the single source of truth.
         "max_retries": SDK_MAX_RETRIES,
         "timeout": agent_cfg.llm.timeout,
+        "streaming": streaming_enabled,
         "max_completion_tokens": agent_cfg.llm.max_completion_tokens,
         "rate_limiter": rate_limiter,
         "model_kwargs": model_kwargs or None,

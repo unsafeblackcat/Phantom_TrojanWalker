@@ -29,6 +29,7 @@ FunctionAnalysisAgent:
     extra_body: {}
     max_retries: 3
     timeout: 120
+    streaming: true
     max_completion_tokens: 32768
     max_input_tokens: 131072
   rate_limit:
@@ -47,6 +48,7 @@ MalwareAnalysisAgent:
     extra_body: {}
     max_retries: 3
     timeout: 600
+    streaming: true
     max_completion_tokens: 32768
     max_input_tokens: 131072
   rate_limit:

@@ -106,24 +106,33 @@ def _find_existing_task(db: Session, sha256: str) -> AnalysisTask | None:
     )
 
 
-def _task_summary_payload(task: AnalysisTask) -> dict:
-    """Build response payload for task summary endpoints."""
-    return {
+def _task_summary_payload(task: AnalysisTask, include_heavy: bool = True) -> dict:
+    """Build response payload for task summary endpoints.
+
+    include_heavy=False omits large JSON columns to speed up detail polling.
+    """
+    payload = {
         "task_id": task.task_id,
         "status": task.status,
         "sha256": task.sha256,
         "filename": task.filename,
         "metadata": task.metadata_info,
-        "functions": task.functions,
-        "strings": task.strings,
-        "decompiled_code": task.decompiled_code,
-        "function_xrefs": task.function_xrefs,
-        "function_analyses": task.function_analyses,
         "malware_report": task.malware_report,
         "error": task.error_message,
         "created_at": task.created_at,
         "finished_at": task.finished_at,
     }
+    if include_heavy:
+        payload.update(
+            {
+                "functions": task.functions,
+                "strings": task.strings,
+                "decompiled_code": task.decompiled_code,
+                "function_xrefs": task.function_xrefs,
+                "function_analyses": task.function_analyses,
+            }
+        )
+    return payload
 
 
 def _history_entry_payload(task: AnalysisTask) -> dict:
@@ -193,20 +202,28 @@ async def analyze_file(
     }
 
 @router.get("/tasks/{task_id}")
-def get_task_status(task_id: str, db: Session = Depends(get_db)):
+def get_task_status(
+    task_id: str,
+    include_heavy: bool = False,
+    db: Session = Depends(get_db),
+):
     task = db.query(AnalysisTask).filter(AnalysisTask.task_id == task_id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     
-    return _task_summary_payload(task)
+    return _task_summary_payload(task, include_heavy=include_heavy)
 
 @router.get("/result/{sha256}")
-def get_result_by_hash(sha256: str, db: Session = Depends(get_db)):
+def get_result_by_hash(
+    sha256: str,
+    include_heavy: bool = False,
+    db: Session = Depends(get_db),
+):
     task = db.query(AnalysisTask).filter(AnalysisTask.sha256 == sha256).order_by(desc(AnalysisTask.created_at)).first()
     if not task:
         raise HTTPException(status_code=404, detail="Analysis not found")
         
-    payload = _task_summary_payload(task)
+    payload = _task_summary_payload(task, include_heavy=include_heavy)
     # Keep legacy behavior: omit timestamps in hash lookup response.
     payload.pop("created_at", None)
     payload.pop("finished_at", None)

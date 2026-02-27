@@ -520,12 +520,30 @@ class MalwareAnalysisAgent:
                 },
             )
             try:
-                content = await self._invoke_with_summarization_middleware(
+                content, updated_messages = await self._invoke_with_summarization_middleware(
                     messages,
                     tools=tools,
                     max_tool_calls=max_tool_calls,
                     max_agent_steps=max_agent_steps,
                     max_tool_result_chars=max_tool_result_chars,
+                )
+            except _AgentInvokeError as exc:
+                messages = exc.messages or messages
+                last_content = str(exc)
+                self._packet_log(
+                    "malware_agent.exception",
+                    {
+                        "attempt": attempt,
+                        "exception_type": type(exc).__name__,
+                        "exception": str(exc),
+                        "preserved_message_count": len(messages),
+                    },
+                )
+                logger.warning(
+                    "MalwareAnalysisAgent LLM call failed with preserved state (attempt %d/%d): %s",
+                    attempt,
+                    self._json_retry_attempts,
+                    exc,
                 )
             except Exception as exc:
                 last_content = str(exc)
@@ -544,6 +562,7 @@ class MalwareAnalysisAgent:
                     exc,
                 )
             else:
+                messages = updated_messages or messages
                 last_content = content
                 self._packet_log(
                     "malware_agent.response",
@@ -571,14 +590,18 @@ class MalwareAnalysisAgent:
 
     async def _invoke_with_summarization_middleware(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Any],
         tools: List[Any],
         max_tool_calls: int,
         max_agent_steps: int,
         max_tool_result_chars: int,
-    ) -> str:
+    ) -> Tuple[str, List[Any]]:
         from langchain.agents import create_agent
         from langchain.agents.middleware import SummarizationMiddleware, AgentMiddleware
+
+        invoke_state: Dict[str, Any] = {
+            "messages": list(messages or []),
+        }
 
         class ToolBudgetMiddleware(AgentMiddleware):
             def __init__(
@@ -603,6 +626,7 @@ class MalwareAnalysisAgent:
                 return call_count, total_chars
 
             def wrap_model_call(self, request: Any, handler: Any) -> Any:
+                invoke_state["messages"] = list(getattr(request, "messages", []) or [])
                 call_count, total_chars = self._extract_usage(getattr(request, "messages", []))
                 budget_exceeded = call_count >= self._max_calls or total_chars >= self._max_chars
                 if budget_exceeded:
@@ -617,6 +641,7 @@ class MalwareAnalysisAgent:
                 return handler(request)
 
             async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+                invoke_state["messages"] = list(getattr(request, "messages", []) or [])
                 call_count, total_chars = self._extract_usage(getattr(request, "messages", []))
                 budget_exceeded = call_count >= self._max_calls or total_chars >= self._max_chars
                 if budget_exceeded:
@@ -674,10 +699,13 @@ class MalwareAnalysisAgent:
             base_config = self._invoke_config("MalwareAnalysisAgent.analyze")
             if base_config:
                 invoke_config.update(base_config)
-            result = await agent.ainvoke(
-                {"messages": messages},
-                config=invoke_config,
-            )
+            try:
+                result = await agent.ainvoke(
+                    {"messages": messages},
+                    config=invoke_config,
+                )
+            except Exception as exc:
+                raise _AgentInvokeError(str(exc), invoke_state.get("messages") or list(messages or [])) from exc
         else:
             invoke_config = {
                 "recursion_limit": max_agent_steps,
@@ -685,10 +713,13 @@ class MalwareAnalysisAgent:
             base_config = self._invoke_config("MalwareAnalysisAgent.analyze")
             if base_config:
                 invoke_config.update(base_config)
-            result = agent.invoke(
-                {"messages": messages},
-                config=invoke_config,
-            )
+            try:
+                result = agent.invoke(
+                    {"messages": messages},
+                    config=invoke_config,
+                )
+            except Exception as exc:
+                raise _AgentInvokeError(str(exc), invoke_state.get("messages") or list(messages or [])) from exc
 
         self._packet_log(
             "malware_agent.invoke.response",
@@ -697,8 +728,16 @@ class MalwareAnalysisAgent:
             },
         )
 
-        if isinstance(result, dict) and "output" in result:
-            return _response_to_text(result["output"])
+        updated_messages: List[Any] = invoke_state.get("messages") or list(messages or [])
         if isinstance(result, dict) and "messages" in result and result["messages"]:
-            return _response_to_text(result["messages"][-1])
-        return _response_to_text(result)
+            updated_messages = list(result["messages"])
+            return _response_to_text(result["messages"][-1]), updated_messages
+        if isinstance(result, dict) and "output" in result:
+            return _response_to_text(result["output"]), updated_messages
+        return _response_to_text(result), updated_messages
+
+
+class _AgentInvokeError(Exception):
+    def __init__(self, message: str, messages: Optional[List[Any]] = None):
+        super().__init__(message)
+        self.messages = list(messages or [])

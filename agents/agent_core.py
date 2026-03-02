@@ -510,12 +510,18 @@ class MalwareAnalysisAgent:
         ]
 
         last_content = ""
-        for attempt in range(1, self._json_retry_attempts + 1):
+        error_retry_count = 0
+        json_parse_retry_count = 0
+        iteration = 0
+        while True:
+            iteration += 1
             self._packet_log(
                 "malware_agent.request",
                 {
-                    "attempt": attempt,
+                    "attempt": iteration,
                     "max_attempts": self._json_retry_attempts,
+                    "error_retry_count": error_retry_count,
+                    "json_parse_retry_count": json_parse_retry_count,
                     "messages": messages,
                     "tool_count": len(tools),
                     "max_tool_calls": max_tool_calls,
@@ -534,58 +540,71 @@ class MalwareAnalysisAgent:
             except _AgentInvokeError as exc:
                 messages = exc.messages or messages
                 last_content = str(exc)
+                error_retry_count += 1
                 self._packet_log(
                     "malware_agent.exception",
                     {
-                        "attempt": attempt,
+                        "attempt": iteration,
+                        "error_retry_count": error_retry_count,
                         "exception_type": type(exc).__name__,
                         "exception": str(exc),
                         "preserved_message_count": len(messages),
                     },
                 )
                 logger.warning(
-                    "MalwareAnalysisAgent LLM call failed with preserved state (attempt %d/%d): %s",
-                    attempt,
+                    "MalwareAnalysisAgent LLM call failed with preserved state (error retry %d/%d): %s",
+                    error_retry_count,
                     self._json_retry_attempts,
                     exc,
                 )
             except Exception as exc:
                 last_content = str(exc)
+                error_retry_count += 1
                 self._packet_log(
                     "malware_agent.exception",
                     {
-                        "attempt": attempt,
+                        "attempt": iteration,
+                        "error_retry_count": error_retry_count,
                         "exception_type": type(exc).__name__,
                         "exception": str(exc),
                     },
                 )
                 logger.warning(
-                    "MalwareAnalysisAgent LLM call failed (attempt %d/%d): %s",
-                    attempt,
+                    "MalwareAnalysisAgent LLM call failed (error retry %d/%d): %s",
+                    error_retry_count,
                     self._json_retry_attempts,
                     exc,
                 )
             else:
+                # Reset consecutive API error retries after any successful invoke.
+                error_retry_count = 0
                 messages = updated_messages or messages
                 last_content = content
                 self._packet_log(
                     "malware_agent.response",
                     {
-                        "attempt": attempt,
+                        "attempt": iteration,
                         "raw_response": content,
                     },
                 )
                 parsed = _json_or_error_payload("MalwareAnalysisAgent", content)
                 if "error" not in parsed:
                     return parsed
+                json_parse_retry_count += 1
                 logger.warning(
-                    "MalwareAnalysisAgent JSON parse failed (attempt %d/%d)",
-                    attempt,
+                    "MalwareAnalysisAgent JSON parse failed (retry %d/%d)",
+                    json_parse_retry_count,
                     self._json_retry_attempts,
                 )
 
-            if attempt < self._json_retry_attempts:
-                await asyncio.sleep(self._retry_delay(attempt))
+                if json_parse_retry_count >= self._json_retry_attempts:
+                    break
+                await asyncio.sleep(self._retry_delay(json_parse_retry_count))
+                continue
+
+            if error_retry_count >= self._json_retry_attempts:
+                break
+            await asyncio.sleep(self._retry_delay(error_retry_count))
 
         raise LLMResponseError(
             "Failed to parse JSON response from MalwareAnalysisAgent",

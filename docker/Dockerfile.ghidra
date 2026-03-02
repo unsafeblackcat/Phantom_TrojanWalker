@@ -50,6 +50,6 @@ EXPOSE 8000
 EXPOSE 9000
 
 # Run the FastAPI service and the MCP server
-# We run from /app so that ROOT_DIR calculation in main.py works correctly
-# (ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(abspath))))
-CMD ["bash", "-lc", "python module/ghidra_pipe/main.py & python module/ghidra_mcp/main.py"]
+# Keep ghidra_pipe in foreground so forced stop can terminate container process,
+# allowing compose restart policy to recover service automatically.
+CMD ["bash", "-lc", "python module/ghidra_mcp/main.py & python module/ghidra_pipe/main.py"]

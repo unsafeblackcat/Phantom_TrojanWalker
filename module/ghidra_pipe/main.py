@@ -9,6 +9,8 @@ import uuid
 import threading
 import logging
 import hashlib
+import signal
+import time
 from typing import List
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -101,6 +103,19 @@ def _close_analyzer() -> None:
         analyzer = None
 
 
+def _force_terminate_process(delay_seconds: float = 0.2) -> None:
+    """Terminate current process to hard-stop any ongoing Ghidra work."""
+    time.sleep(max(delay_seconds, 0.0))
+    pid = os.getpid()
+    logger.error("Force terminating ghidra_pipe process (pid=%s)", pid)
+    try:
+        sig = signal.SIGKILL if hasattr(signal, "SIGKILL") else signal.SIGTERM
+        os.kill(pid, sig)
+    except Exception:
+        # Last-resort hard exit for environments without signal support.
+        os._exit(1)
+
+
 @app.get("/health_check")
 def health_check():
     """Health check endpoint."""
@@ -141,6 +156,14 @@ def close_analyzer():
     with analyzer_lock:
         _close_analyzer()
     return {"status": "closed"}
+
+
+@app.post("/stop_analysis")
+def stop_analysis():
+    """Force-stop current analysis by terminating ghidra_pipe process."""
+    logger.error("Received /stop_analysis request, scheduling forced process termination.")
+    threading.Thread(target=_force_terminate_process, daemon=True).start()
+    return {"status": "accepted", "message": "Process termination scheduled"}
 
 
 @app.get("/analyze")

@@ -5,6 +5,7 @@ plugins:
       health_check: "/health_check"
       upload: "/upload"
       analyze: "/analyze"
+      stop_analysis: "/stop_analysis"
       metadata: "/metadata"
       functions: "/functions"
       exports: "/exports"

@@ -6,7 +6,7 @@ import httpx
 import logging
 from typing import Dict, Any, List, Optional
 from config_loader import AppConfig
-from exceptions import GhidraBackendError
+from exceptions import GhidraBackendError, GhidraTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,11 @@ class GhidraClient:
                 resp = await client.request(method, url, **kwargs)
                 resp.raise_for_status()
                 return self._safe_json_or_text(resp)
+            except httpx.TimeoutException as e:
+                logger.error("Request timeout for %s: %s", url, e)
+                raise GhidraTimeoutError(
+                    f"Ghidra request timed out: {endpoint_key}", endpoint=endpoint_key
+                ) from e
             except httpx.HTTPStatusError as e:
                 logger.error("HTTP error %s for %s", e.response.status_code, url)
                 raise GhidraBackendError(
@@ -99,7 +104,20 @@ class GhidraClient:
     async def trigger_analysis(self):
         """Trigger analysis on the uploaded binary."""
         # Ghidra analysis can take longer than Rizin
-        await self._request("GET", "analyze", timeout=3600.0)
+        try:
+            await self._request("GET", "analyze", timeout=3600.0)
+        except GhidraTimeoutError:
+            logger.error("Ghidra /analyze timed out; requesting forced stop.")
+            try:
+                await self.stop_analysis()
+            except Exception as stop_error:
+                logger.error("Failed to call stop_analysis after timeout: %s", stop_error)
+            raise
+
+    async def stop_analysis(self) -> Dict[str, Any]:
+        """Force-stop the current analysis process in ghidra_pipe service."""
+        res = await self._request("POST", "stop_analysis", timeout=5.0)
+        return self._coerce_dict(res)
 
     async def get_metadata(self) -> Dict[str, Any]:
         """Get binary metadata."""

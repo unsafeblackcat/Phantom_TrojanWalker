@@ -10,6 +10,13 @@ class GhidraAnalysisError(GhidraBackendError):
     """Ghidra 分析执行失败"""
     pass
 
+class GhidraTimeoutError(GhidraBackendError):
+    """远程 Ghidra 后端请求超时"""
+
+    def __init__(self, message: str, endpoint: str | None = None):
+        super().__init__(message)
+        self.endpoint = endpoint
+
 class AgentError(TrojanWalkerError):
     """AI Agent 相关的基类异常"""
     pass

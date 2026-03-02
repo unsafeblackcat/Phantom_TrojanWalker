@@ -23,6 +23,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.ghidra
     container_name: ph_ghidra
+    restart: unless-stopped
     ports:
       - "127.0.0.1:8000:8000"
       - "127.0.0.1:9000:9000"

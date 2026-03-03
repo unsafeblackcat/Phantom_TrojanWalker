@@ -3,6 +3,7 @@ import logging
 import asyncio
 import os
 from typing import Any, Dict, List, Optional, Tuple
+from json_repair import repair_json
 
 from langchain_openai import ChatOpenAI
 from config_loader import load_config
@@ -131,7 +132,12 @@ def _build_invoke_config(
 
 def _json_or_error_payload(agent_name: str, content: str) -> Dict[str, Any]:
     try:
-        parsed = json.loads(content)
+        parsed = repair_json(
+            content,
+            return_objects=True,
+            ensure_ascii=False,
+            strict=True,
+        )
         if isinstance(parsed, dict):
             return parsed
         # LLM should return JSON object; normalize non-dict JSON into an error payload.

@@ -42,6 +42,10 @@
 - 预查：先请求 `GET /api/result/{sha256}`，若命中且任务状态不是 `failed`，直接复用展示。
 - 若未命中或命中但为 `failed`，则继续上传分析。
 
+接口返回约定（性能相关）：
+- `GET /api/result/{sha256}` 默认是轻量返回（不含大体积重字段）。
+- 若未来需要调试/高级视图，可通过查询参数 `include_heavy=true` 获取完整重字段。
+
 > 语义说明：后端去重会复用 `pending/processing/completed`，但通常不会复用 `failed`；前端这里的策略与后端契约保持一致。
 
 ### 3.2 创建任务与轮询
@@ -50,6 +54,10 @@
   - `pending/processing`：继续轮询
   - `completed`：渲染结果
   - `failed`：展示错误并允许重试
+
+接口返回约定（性能相关）：
+- `GET /api/tasks/{task_id}` 默认轻量返回，已满足当前 `TaskDetail/ReportView` 的渲染需求（主要消费 `metadata` 与 `malware_report`）。
+- 仅在确实要展示函数级大字段时，再使用 `include_heavy=true`。
 
 ### 3.3 报告渲染
 `ReportView.jsx` 主要消费后端返回中的：

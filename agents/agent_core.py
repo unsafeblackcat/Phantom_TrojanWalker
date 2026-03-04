@@ -3,6 +3,7 @@ import logging
 import asyncio
 import os
 from typing import Any, Dict, List, Optional, Tuple
+from json_repair import repair_json
 
 from langchain_openai import ChatOpenAI
 from config_loader import load_config
@@ -131,7 +132,12 @@ def _build_invoke_config(
 
 def _json_or_error_payload(agent_name: str, content: str) -> Dict[str, Any]:
     try:
-        parsed = json.loads(content)
+        parsed = repair_json(
+            content,
+            return_objects=True,
+            ensure_ascii=False,
+            strict=True,
+        )
         if isinstance(parsed, dict):
             return parsed
         # LLM should return JSON object; normalize non-dict JSON into an error payload.
@@ -189,6 +195,9 @@ def _build_llm_params(
     if agent_cfg.llm.extra_body:
         model_kwargs["extra_body"] = agent_cfg.llm.extra_body
 
+    streaming = getattr(agent_cfg.llm, "streaming", None)
+    streaming_enabled = streaming if isinstance(streaming, bool) else True
+
     params = {
         "name": agent_name,
         "base_url": agent_cfg.llm.base_url,
@@ -197,6 +206,7 @@ def _build_llm_params(
         # Disable SDK/internal retries; outer retry loop remains the single source of truth.
         "max_retries": SDK_MAX_RETRIES,
         "timeout": agent_cfg.llm.timeout,
+        "streaming": streaming_enabled,
         "max_completion_tokens": agent_cfg.llm.max_completion_tokens,
         "rate_limiter": rate_limiter,
         "model_kwargs": model_kwargs or None,
@@ -506,12 +516,18 @@ class MalwareAnalysisAgent:
         ]
 
         last_content = ""
-        for attempt in range(1, self._json_retry_attempts + 1):
+        error_retry_count = 0
+        json_parse_retry_count = 0
+        iteration = 0
+        while True:
+            iteration += 1
             self._packet_log(
                 "malware_agent.request",
                 {
-                    "attempt": attempt,
+                    "attempt": iteration,
                     "max_attempts": self._json_retry_attempts,
+                    "error_retry_count": error_retry_count,
+                    "json_parse_retry_count": json_parse_retry_count,
                     "messages": messages,
                     "tool_count": len(tools),
                     "max_tool_calls": max_tool_calls,
@@ -520,49 +536,81 @@ class MalwareAnalysisAgent:
                 },
             )
             try:
-                content = await self._invoke_with_summarization_middleware(
+                content, updated_messages = await self._invoke_with_summarization_middleware(
                     messages,
                     tools=tools,
                     max_tool_calls=max_tool_calls,
                     max_agent_steps=max_agent_steps,
                     max_tool_result_chars=max_tool_result_chars,
                 )
-            except Exception as exc:
+            except _AgentInvokeError as exc:
+                messages = exc.messages or messages
                 last_content = str(exc)
+                error_retry_count += 1
                 self._packet_log(
                     "malware_agent.exception",
                     {
-                        "attempt": attempt,
+                        "attempt": iteration,
+                        "error_retry_count": error_retry_count,
+                        "exception_type": type(exc).__name__,
+                        "exception": str(exc),
+                        "preserved_message_count": len(messages),
+                    },
+                )
+                logger.warning(
+                    "MalwareAnalysisAgent LLM call failed with preserved state (error retry %d/%d): %s",
+                    error_retry_count,
+                    self._json_retry_attempts,
+                    exc,
+                )
+            except Exception as exc:
+                last_content = str(exc)
+                error_retry_count += 1
+                self._packet_log(
+                    "malware_agent.exception",
+                    {
+                        "attempt": iteration,
+                        "error_retry_count": error_retry_count,
                         "exception_type": type(exc).__name__,
                         "exception": str(exc),
                     },
                 )
                 logger.warning(
-                    "MalwareAnalysisAgent LLM call failed (attempt %d/%d): %s",
-                    attempt,
+                    "MalwareAnalysisAgent LLM call failed (error retry %d/%d): %s",
+                    error_retry_count,
                     self._json_retry_attempts,
                     exc,
                 )
             else:
+                # Reset consecutive API error retries after any successful invoke.
+                error_retry_count = 0
+                messages = updated_messages or messages
                 last_content = content
                 self._packet_log(
                     "malware_agent.response",
                     {
-                        "attempt": attempt,
+                        "attempt": iteration,
                         "raw_response": content,
                     },
                 )
                 parsed = _json_or_error_payload("MalwareAnalysisAgent", content)
                 if "error" not in parsed:
                     return parsed
+                json_parse_retry_count += 1
                 logger.warning(
-                    "MalwareAnalysisAgent JSON parse failed (attempt %d/%d)",
-                    attempt,
+                    "MalwareAnalysisAgent JSON parse failed (retry %d/%d)",
+                    json_parse_retry_count,
                     self._json_retry_attempts,
                 )
 
-            if attempt < self._json_retry_attempts:
-                await asyncio.sleep(self._retry_delay(attempt))
+                if json_parse_retry_count >= self._json_retry_attempts:
+                    break
+                await asyncio.sleep(self._retry_delay(json_parse_retry_count))
+                continue
+
+            if error_retry_count >= self._json_retry_attempts:
+                break
+            await asyncio.sleep(self._retry_delay(error_retry_count))
 
         raise LLMResponseError(
             "Failed to parse JSON response from MalwareAnalysisAgent",
@@ -571,14 +619,18 @@ class MalwareAnalysisAgent:
 
     async def _invoke_with_summarization_middleware(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Any],
         tools: List[Any],
         max_tool_calls: int,
         max_agent_steps: int,
         max_tool_result_chars: int,
-    ) -> str:
+    ) -> Tuple[str, List[Any]]:
         from langchain.agents import create_agent
         from langchain.agents.middleware import SummarizationMiddleware, AgentMiddleware
+
+        invoke_state: Dict[str, Any] = {
+            "messages": list(messages or []),
+        }
 
         class ToolBudgetMiddleware(AgentMiddleware):
             def __init__(
@@ -603,6 +655,7 @@ class MalwareAnalysisAgent:
                 return call_count, total_chars
 
             def wrap_model_call(self, request: Any, handler: Any) -> Any:
+                invoke_state["messages"] = list(getattr(request, "messages", []) or [])
                 call_count, total_chars = self._extract_usage(getattr(request, "messages", []))
                 budget_exceeded = call_count >= self._max_calls or total_chars >= self._max_chars
                 if budget_exceeded:
@@ -617,6 +670,7 @@ class MalwareAnalysisAgent:
                 return handler(request)
 
             async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+                invoke_state["messages"] = list(getattr(request, "messages", []) or [])
                 call_count, total_chars = self._extract_usage(getattr(request, "messages", []))
                 budget_exceeded = call_count >= self._max_calls or total_chars >= self._max_chars
                 if budget_exceeded:
@@ -674,10 +728,13 @@ class MalwareAnalysisAgent:
             base_config = self._invoke_config("MalwareAnalysisAgent.analyze")
             if base_config:
                 invoke_config.update(base_config)
-            result = await agent.ainvoke(
-                {"messages": messages},
-                config=invoke_config,
-            )
+            try:
+                result = await agent.ainvoke(
+                    {"messages": messages},
+                    config=invoke_config,
+                )
+            except Exception as exc:
+                raise _AgentInvokeError(str(exc), invoke_state.get("messages") or list(messages or [])) from exc
         else:
             invoke_config = {
                 "recursion_limit": max_agent_steps,
@@ -685,10 +742,13 @@ class MalwareAnalysisAgent:
             base_config = self._invoke_config("MalwareAnalysisAgent.analyze")
             if base_config:
                 invoke_config.update(base_config)
-            result = agent.invoke(
-                {"messages": messages},
-                config=invoke_config,
-            )
+            try:
+                result = agent.invoke(
+                    {"messages": messages},
+                    config=invoke_config,
+                )
+            except Exception as exc:
+                raise _AgentInvokeError(str(exc), invoke_state.get("messages") or list(messages or [])) from exc
 
         self._packet_log(
             "malware_agent.invoke.response",
@@ -697,8 +757,16 @@ class MalwareAnalysisAgent:
             },
         )
 
-        if isinstance(result, dict) and "output" in result:
-            return _response_to_text(result["output"])
+        updated_messages: List[Any] = invoke_state.get("messages") or list(messages or [])
         if isinstance(result, dict) and "messages" in result and result["messages"]:
-            return _response_to_text(result["messages"][-1])
-        return _response_to_text(result)
+            updated_messages = list(result["messages"])
+            return _response_to_text(result["messages"][-1]), updated_messages
+        if isinstance(result, dict) and "output" in result:
+            return _response_to_text(result["output"]), updated_messages
+        return _response_to_text(result), updated_messages
+
+
+class _AgentInvokeError(Exception):
+    def __init__(self, message: str, messages: Optional[List[Any]] = None):
+        super().__init__(message)
+        self.messages = list(messages or [])

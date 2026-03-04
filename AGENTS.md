@@ -27,7 +27,7 @@ The system enforces single-concurrency analysis because Ghidra maintains a globa
 |------|----------|-------|
 | Upload + sha256 dedupe + size limits | `backend/api/endpoints.py` | streaming upload, sha256-based filenames |
 | Task queue + single-concurrency lock | `backend/worker/worker.py` | `_analysis_lock` enforces global Ghidra constraint |
-| Analysis pipeline + function filtering | `agents/analysis_coordinator.py` | FUN_* + entrypoints only, ATT&CK filter |
+| Analysis pipeline + function filtering | `agents/analysis_coordinator.py` | FUN_* + entrypoints + exports, ATT&CK filter |
 | LLM agents + JSON enforcement | `agents/agent_core.py` | JSON object required, per-function batch analysis |
 | Agent prompts + schema contract | `agents/prompt/*.md` | strict "no fabrication" rules |
 | Ghidra HTTP service | `module/ghidra_pipe/main.py` | global analyzer state |

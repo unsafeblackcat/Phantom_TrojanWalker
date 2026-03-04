@@ -16,3 +16,4 @@ pytest
 pytest-asyncio
 fastmcp>=2.14.4
 colorama
+json-repair==0.*

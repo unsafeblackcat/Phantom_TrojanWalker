@@ -54,6 +54,7 @@
 3. **深度分析**：`GhidraClient.trigger_analysis()`（Ghidra analyzeAll）
 4. **元数据**：`GhidraClient.get_metadata()`（包含 core 和 bin 信息）
 5. **函数列表**：`GhidraClient.get_functions()`（来自 FunctionManager）并整理为 `functions_data`
+5.5 **导出表**：`GhidraClient.get_exports()`（GET `/exports`，每项固定 `{name, offset}`）
 6. **字符串**：`GhidraClient.get_strings()`（来自 Listing DefinedData）
 7. **全局调用图**：`GhidraClient.get_callgraph()`（来自 ReferenceManager）
 7.5 **函数交叉引用**：`GhidraClient.get_function_xrefs_batch(func_names)`（POST `/xrefs_batch`）
@@ -75,6 +76,7 @@
 `AnalysisCoordinator` 会从反编译结果中选出要喂给 LLM 的目标函数：
 - `FUN_*` 自动命名函数（Ghidra 常见前缀）
 - 常见入口点：`main/WinMain/DllMain/_start` 及若干 CRT 启动符号（见 `_is_ai_target_function()`）
+- 导出表函数：按导出名匹配，并结合导出地址（offset）与函数入口地址匹配，避免导出符号被漏掉
 
 这样做的目的：减少无关函数带来的 token 成本与噪音。
 
@@ -97,6 +99,7 @@
   - `get_decompiled_codes_batch()`：900s
 
 ### 4.3 重要返回形状（简要）
+- `GET /exports` 出参：`[{"name": "<export_name>", "offset": <int>}, ...]`
 - `POST /decompile_batch` 入参：JSON 数组 `List[str]`（地址或函数名）
 - `POST /decompile_batch` 出参：`[{"address": "<name_or_addr>", "code": "..."}, ...]`
   - 注意：ghidra_pipe 端会"吞异常并跳过失败项"，上游必须容忍缺项。

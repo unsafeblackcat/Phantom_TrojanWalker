@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Set, Tuple
 from fastapi import UploadFile
 
 from ghidra_client import GhidraClient
@@ -95,9 +95,94 @@ class AnalysisCoordinator:
         # Refactor: keep filtering rules in one place.
         return [f["name"] for f in functions_data if f.get("name")]
 
-    def _filter_function_names_for_decompile(self, func_names: List[str]) -> List[str]:
-        """Limit decompile targets to auto-named and common entrypoint functions."""
-        return [name for name in func_names if self._is_ai_target_function(name)]
+    def _build_export_markers(self, exports_data: List[Dict[str, Any]]) -> Tuple[Set[str], Set[str], Set[int]]:
+        """Build exact/normalized export names and exported offsets from export entries."""
+        exact_names: Set[str] = set()
+        normalized_names: Set[str] = set()
+        exported_offsets: Set[int] = set()
+
+        for item in exports_data:
+            if not isinstance(item, dict):
+                continue
+            name_value = item.get("name")
+            if name_value:
+                name = str(name_value).strip()
+                if name:
+                    exact_names.add(name)
+                    normalized = self._normalize_func_name(name)
+                    if normalized:
+                        normalized_names.add(normalized)
+
+            offset_value = item.get("offset")
+            if isinstance(offset_value, int):
+                exported_offsets.add(offset_value)
+
+        return exact_names, normalized_names, exported_offsets
+
+    def _build_function_offset_map(self, functions_data: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Build function name -> entry offset lookup."""
+        mapping: Dict[str, int] = {}
+        for item in functions_data:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name")
+            offset = item.get("offset")
+            if name and isinstance(offset, int) and name not in mapping:
+                mapping[name] = offset
+        return mapping
+
+    def _is_exported_function(
+        self,
+        name: str,
+        exported_exact: Set[str],
+        exported_normalized: Set[str],
+        exported_offsets: Set[int],
+        function_offsets: Dict[str, int],
+    ) -> bool:
+        """Check if a function belongs to export table (name or offset match)."""
+        if not name:
+            return False
+        if name in exported_exact:
+            return True
+        normalized = self._normalize_func_name(str(name))
+        if normalized and normalized in exported_normalized:
+            return True
+        func_offset = function_offsets.get(name)
+        return isinstance(func_offset, int) and func_offset in exported_offsets
+
+    def _merge_function_candidates(self, func_names: List[str]) -> List[str]:
+        """Build stable deduplicated function candidates."""
+        merged: List[str] = []
+        seen: Set[str] = set()
+
+        for name in func_names:
+            if name and name not in seen:
+                seen.add(name)
+                merged.append(name)
+
+        return merged
+
+    def _filter_function_names_for_decompile(
+        self,
+        func_names: List[str],
+        exported_exact: Set[str],
+        exported_normalized: Set[str],
+        exported_offsets: Set[int],
+        function_offsets: Dict[str, int],
+    ) -> List[str]:
+        """Limit decompile targets to AI targets and export-table functions."""
+        return [
+            name
+            for name in func_names
+            if self._is_ai_target_function(name)
+            or self._is_exported_function(
+                name,
+                exported_exact,
+                exported_normalized,
+                exported_offsets,
+                function_offsets,
+            )
+        ]
 
     def _map_decompiled_results(self, decompiled_codes_raw: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         # Refactor: normalize backend results and guard missing fields.
@@ -113,12 +198,26 @@ class AnalysisCoordinator:
                 })
         return mapped
 
-    def _filter_target_functions(self, decompiled_codes: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    def _filter_target_functions(
+        self,
+        decompiled_codes: List[Dict[str, str]],
+        exported_exact: Set[str],
+        exported_normalized: Set[str],
+        exported_offsets: Set[int],
+        function_offsets: Dict[str, int],
+    ) -> List[Dict[str, str]]:
         # Refactor: single-responsibility filtering step for AI analysis.
         return [
             item
             for item in decompiled_codes
             if self._is_ai_target_function(item.get("name"))
+            or self._is_exported_function(
+                item.get("name"),
+                exported_exact,
+                exported_normalized,
+                exported_offsets,
+                function_offsets,
+            )
         ]
 
     def _build_callers_lookup(self, function_xrefs: List[Dict[str, Any]] | None) -> Dict[str, List[Dict[str, Any]]]:
@@ -137,6 +236,10 @@ class AnalysisCoordinator:
         self,
         target_funcs: List[Dict[str, str]],
         callers_lookup: Dict[str, List[Dict[str, Any]]],
+        exported_exact: Set[str],
+        exported_normalized: Set[str],
+        exported_offsets: Set[int],
+        function_offsets: Dict[str, int],
     ) -> List[Dict[str, str]]:
         """
         Filter out functions that have no callers, unless they are entry points.
@@ -149,6 +252,16 @@ class AnalysisCoordinator:
                 continue
             # Always keep entry point functions
             if self._is_entry_point_function(name):
+                filtered.append(item)
+                continue
+            # Exported functions may be externally invoked, keep them even without internal callers.
+            if self._is_exported_function(
+                name,
+                exported_exact,
+                exported_normalized,
+                exported_offsets,
+                function_offsets,
+            ):
                 filtered.append(item)
                 continue
             # Keep functions that have at least one caller
@@ -204,6 +317,16 @@ class AnalysisCoordinator:
 
         functions_data = self._build_functions_payload(raw_funcs)
 
+        # 5.5 Fetch Exports
+        logger.info("Step 5.5: Fetching export table entries...")
+        exports_data = await self.ghidra.get_exports()
+        if exports_data is None:
+            logger.warning("Ghidra returned null exports list; defaulting to empty")
+            exports_data = []
+        exported_exact_names, exported_normalized_names, exported_offsets = self._build_export_markers(exports_data)
+        function_offsets = self._build_function_offset_map(functions_data)
+        logger.info("Export table function candidates: %d", len(exported_exact_names))
+
         # 6. Fetch Strings
         logger.info("Step 6: Fetching strings from binary...")
         strings_data = await self.ghidra.get_strings()
@@ -218,7 +341,14 @@ class AnalysisCoordinator:
         # 7.5 Fetch function cross-references (callers/callees)
         logger.info("Step 7.5: Fetching function cross-references...")
         func_names = self._extract_function_names(functions_data)
-        decompile_targets = self._filter_function_names_for_decompile(func_names)
+        merged_func_candidates = self._merge_function_candidates(func_names)
+        decompile_targets = self._filter_function_names_for_decompile(
+            merged_func_candidates,
+            exported_exact_names,
+            exported_normalized_names,
+            exported_offsets,
+            function_offsets,
+        )
         logger.info(f"Xrefs targets: {len(decompile_targets)} functions")
         function_xrefs = await self.ghidra.get_function_xrefs_batch(decompile_targets)
         if function_xrefs is None:
@@ -244,11 +374,24 @@ class AnalysisCoordinator:
         logger.info(f"Step 9: Analyzing {len(decompiled_codes)} decompiled functions...")
 
         # 分析目标函数：FUN_* / fcn.* 自动命名函数 + 常见入口函数（main/WinMain/DllMain 等）
-        target_funcs = self._filter_target_functions(decompiled_codes)
+        target_funcs = self._filter_target_functions(
+            decompiled_codes,
+            exported_exact_names,
+            exported_normalized_names,
+            exported_offsets,
+            function_offsets,
+        )
         
         # 9.1 Filter out functions with no callers (except entry points)
         # 如果一个函数没有被其他任何函数调用，则不分析该函数（入口函数例外）
-        target_funcs = self._filter_functions_with_callers(target_funcs, callers_lookup)
+        target_funcs = self._filter_functions_with_callers(
+            target_funcs,
+            callers_lookup,
+            exported_exact_names,
+            exported_normalized_names,
+            exported_offsets,
+            function_offsets,
+        )
         logger.info(f"After caller filter: {len(target_funcs)} functions to analyze")
         
         if not target_funcs:

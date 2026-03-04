@@ -5,8 +5,10 @@ plugins:
       health_check: "/health_check"
       upload: "/upload"
       analyze: "/analyze"
+      stop_analysis: "/stop_analysis"
       metadata: "/metadata"
       functions: "/functions"
+      exports: "/exports"
       strings: "/strings"
       callgraph: "/callgraph"
       decompile: "/decompile"
@@ -28,6 +30,7 @@ FunctionAnalysisAgent:
     extra_body: {}
     max_retries: 3
     timeout: 120
+    streaming: true
     max_completion_tokens: 32768
     max_input_tokens: 131072
   rate_limit:
@@ -46,6 +49,7 @@ MalwareAnalysisAgent:
     extra_body: {}
     max_retries: 3
     timeout: 600
+    streaming: true
     max_completion_tokens: 32768
     max_input_tokens: 131072
   rate_limit:

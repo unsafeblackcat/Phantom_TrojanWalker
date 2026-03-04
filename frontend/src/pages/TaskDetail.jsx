@@ -12,7 +12,7 @@ const STATUS = {
   completed: "completed",
   failed: "failed",
 };
-const POLL_INTERVAL_MS = 2000;
+const POLL_INTERVAL_MS = 30000;
 
 function isInProgress(status) {
   return status === STATUS.pending || status === STATUS.processing;

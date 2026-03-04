@@ -115,8 +115,10 @@ plugins:
       health_check: "/health_check"
       upload: "/upload"
       analyze: "/analyze"
+      stop_analysis: "/stop_analysis"
       metadata: "/metadata"
       functions: "/functions"
+      exports: "/exports"
       strings: "/strings"
       callgraph: "/callgraph"
       decompile: "/decompile"
@@ -132,12 +134,13 @@ FunctionAnalysisAgent:
   system_prompt_path: "prompt/FunctionAnalysisAgent.md"
   llm:
     model_name: deepseek-reasoner
-    temperature: 0
+    temperature: 0  # 建议注释掉该参数使用模型提供商的默认值
     api_key: "YOUR_API_KEY_HERE"
     base_url: "https://api.deepseek.com/chat/completions"
     extra_body: {}
     max_retries: 3
     timeout: 120
+    streaming: true
     max_completion_tokens: 32768
     max_input_tokens: 131072
   rate_limit:
@@ -150,18 +153,25 @@ MalwareAnalysisAgent:
   system_prompt_path: "prompt/MalwareAnalysisAgent.md"
   llm:
     model_name: deepseek-reasoner
-    temperature: 0
+    temperature: 0  # 建议注释掉该参数使用模型提供商的默认值
     api_key: "YOUR_API_KEY_HERE"
     base_url: "https://api.deepseek.com/chat/completions"
     extra_body: {}
     max_retries: 3
     timeout: 600
+    streaming: true
     max_completion_tokens: 32768
     max_input_tokens: 131072
   rate_limit:
     requests_per_second: 10
     check_every_n_seconds: 0.1
     max_bucket_size: 10
+  tool_budget:
+    enabled: true
+    max_tool_calls: 12
+    max_agent_steps: 30
+    max_tool_result_chars: 120000
+
 
 ```
 

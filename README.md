@@ -264,14 +264,18 @@ ollvm分析不了是ghidra的问题，某些样本栈不平衡也会干扰ghidra
 
 机器性能很弱，ghidra容器只分配了1个cpu核心，所以不要传很复杂的程序分析，查不到历史记录说明机器炸了
 
-这是一个示例：478eb07375f1513160ad5e80dff2c03f93707d414c4e13e1d7826067b8c9cf3c
+这是一个示例样本：https://phantom.num123.top/task/19f28499-a7dc-4dca-b461-a4f413f05f81
 
-<img width="1839" height="479" alt="图片" src="https://github.com/user-attachments/assets/fe0542de-0e4d-41a4-b6bc-536b5f6552d5" />
-<img width="1815" height="820" alt="图片" src="https://github.com/user-attachments/assets/cac134fe-a3d8-47d9-86e6-efe4274d44b0" />
-<img width="1760" height="864" alt="图片" src="https://github.com/user-attachments/assets/76877adf-b3bc-4048-85dd-3e781d60a7dc" />
-<img width="1754" height="392" alt="图片" src="https://github.com/user-attachments/assets/39972db0-432f-4fcf-969b-d87cb7ad6f14" />
-<img width="1729" height="799" alt="图片" src="https://github.com/user-attachments/assets/a0ea171e-8f36-40e4-ba07-d7c3e0efa73f" />
+吾爱破解上有分析报告：https://www.52pojie.cn/thread-2081501-1-1.html
 
+25年10月的样本，截止到26年3月，VT 3/70：https://www.virustotal.com/gui/file/6366946bb933e452b32e936adcc67c7c7240dbcc0f8830829dd2413c588e62cc
+
+Phantom_TrojanWalker准确识别出完整攻击链，本项目不是开源+mcp的垃圾
+
+<img width="1537" height="815" alt="图片" src="https://github.com/user-attachments/assets/e96918be-d43a-44ac-8e76-5a60cb5fe3fb" />
+<img width="1506" height="824" alt="图片" src="https://github.com/user-attachments/assets/24d82a81-4cd5-42ef-8e98-b0e59a7b5861" />
+<img width="1480" height="831" alt="图片" src="https://github.com/user-attachments/assets/bfeb653b-5466-4438-be11-7d9c0df15cee" />
+<img width="1492" height="759" alt="图片" src="https://github.com/user-attachments/assets/9c50112b-6fb2-480e-90c2-bf8d7b5cc9c2" />
 
 最好还是自己部署，部署很方便，首先把config.yaml当中的设置填好，然后直接docker compose就行
 
